@@ -10,8 +10,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from .extract import BASE_URL, PART_RE, normalize_target, search_url, snapshot_from_html
+from .extract import BASE_URL, PART_RE, clean_text, normalize_target, product_url, search_url, snapshot_from_html
 from .models import FindPartsResult, PageSnapshot, ProductHit
+from .rank import derive_search_queries, derive_search_query, rank_products
 
 
 @dataclass
@@ -102,11 +103,21 @@ class McMasterNavigator:
         snapshot = self._snapshot()
 
         depth = 0
+        visited_category_urls = {snapshot.url}
         while depth < depth_limit and len(snapshot.products) < min(20, self.config.max_products):
             previous_count = len(snapshot.products)
-            if not self._click_best_category_candidate():
-                break
-            next_snapshot = self._snapshot()
+            next_snapshot = None
+            if previous_count == 0:
+                next_snapshot = self._open_better_category_link(
+                    snapshot,
+                    query,
+                    previous_count=previous_count,
+                    visited=visited_category_urls,
+                )
+            if next_snapshot is None:
+                if not self._click_best_category_candidate():
+                    break
+                next_snapshot = self._snapshot()
             if len(next_snapshot.products) <= previous_count:
                 break
             snapshot = next_snapshot
@@ -120,7 +131,7 @@ class McMasterNavigator:
         query: str,
         *,
         max_results: int = 50,
-        max_pages: int = 4,
+        max_pages: int = 20,
         auto_drill_depth: int | None = None,
     ) -> FindPartsResult:
         pages: list[PageSnapshot] = []
@@ -149,6 +160,105 @@ class McMasterNavigator:
                 "unique_part_numbers": len({product.part_number for product in products}),
             },
         )
+
+    def find_exact_part(
+        self,
+        description: str,
+        *,
+        search_query: str | None = None,
+        max_candidates: int = 10,
+        max_pages: int = 20,
+        auto_drill_depth: int | None = None,
+        _retry_on_empty: bool = True,
+    ) -> dict[str, Any]:
+        query = search_query or derive_search_query(description)
+        search_queries = [search_query] if search_query else derive_search_queries(description)
+        pages: list[PageSnapshot] = []
+        products: list[ProductHit] = []
+
+        for query_candidate in search_queries:
+            if not query_candidate or len(pages) >= max_pages:
+                continue
+            page = self.search(query_candidate, max_depth=auto_drill_depth)
+            pages.append(page)
+            products = _merge_products(products, page.products)
+
+        verified_parts: set[str] = set()
+        fallback_links = iter(_rank_links_for_query(pages[0], f"{query} {description}")) if pages else iter(())
+        while len(pages) < max_pages:
+            opened_page = False
+            if len(pages) >= max_pages:
+                break
+            ranked = _rank_products_for_pages(description, products, pages)
+            candidate = next(
+                (
+                    item
+                    for item in ranked
+                    if item["part_number"] not in verified_parts and item.get("url")
+                ),
+                None,
+            )
+            if candidate is not None:
+                part_number = candidate["part_number"]
+                try:
+                    page = self.open(candidate["url"])
+                except Exception:
+                    verified_parts.add(part_number)
+                    continue
+                pages.append(page)
+                verified_parts.add(part_number)
+                title_hit = _product_page_title_hit(page, part_number)
+                if title_hit is not None:
+                    products = _merge_products(products, [title_hit])
+                opened_page = True
+
+            if opened_page:
+                continue
+
+            for link in fallback_links:
+                try:
+                    page = self.open(link.url)
+                except Exception:
+                    continue
+                pages.append(page)
+                products = _merge_products(products, page.products)
+                opened_page = True
+                break
+
+            if not opened_page:
+                break
+
+        ranked = _rank_products_for_pages(description, products, pages)
+        if _retry_on_empty and not ranked and pages:
+            self.close()
+            self._trail = []
+            retried = self.find_exact_part(
+                description,
+                search_query=search_query,
+                max_candidates=max_candidates,
+                max_pages=max_pages,
+                auto_drill_depth=auto_drill_depth,
+                _retry_on_empty=False,
+            )
+            retried.setdefault("diagnostics", {})["retried_after_empty"] = True
+            return retried
+        best = ranked[0] if ranked else None
+        selected = _selected_part_result(best)
+        return {
+            "description": description,
+            "search_query": query,
+            "search_queries": search_queries,
+            "part_number": selected["part_number"] if selected else None,
+            "selected_part": selected,
+            "candidates": ranked[:max_candidates],
+            "candidate_count": len(ranked),
+            "pages_visited": [page.to_summary_dict() for page in pages],
+            "diagnostics": {
+                "max_candidates": max_candidates,
+                "max_pages": max_pages,
+                "auto_drill_depth": auto_drill_depth,
+            },
+        }
 
     def follow_link(
         self,
@@ -289,6 +399,35 @@ class McMasterNavigator:
             return True
         return False
 
+    def _open_better_category_link(
+        self,
+        snapshot: PageSnapshot,
+        query: str,
+        *,
+        previous_count: int,
+        visited: set[str],
+    ) -> PageSnapshot | None:
+        best: PageSnapshot | None = None
+        opened = 0
+        for link in _rank_links_for_query(snapshot, query):
+            if link.kind not in {"category", "catalog_category"}:
+                continue
+            if link.url in visited:
+                continue
+            visited.add(link.url)
+            try:
+                page = self.open(link.url)
+            except Exception:
+                continue
+            opened += 1
+            if len(page.products) > previous_count:
+                return page
+            if best is None or len(page.products) > len(best.products):
+                best = page
+            if opened >= 8:
+                break
+        return best
+
 
 def _merge_products(existing: list[ProductHit], incoming: list[ProductHit]) -> list[ProductHit]:
     by_part = {product.part_number: product for product in existing}
@@ -300,10 +439,60 @@ def _merge_products(existing: list[ProductHit], incoming: list[ProductHit]) -> l
         for source in product.sources:
             if source not in current.sources:
                 current.sources.append(source)
-        if product.name and (not current.name or len(product.name) > len(current.name)):
+        if product.name and (
+            "product_page" in product.sources
+            or not current.name
+            or len(product.name) > len(current.name)
+        ):
             current.name = product.name
+        if product.context and (not current.context or len(product.context) > len(current.context)):
+            current.context = product.context
         current.confidence = max(current.confidence, product.confidence)
     return sorted(by_part.values(), key=lambda item: (-item.confidence, item.part_number))
+
+
+def _rank_products_for_pages(
+    description: str,
+    products: list[ProductHit],
+    pages: list[PageSnapshot],
+) -> list[dict[str, Any]]:
+    page_title = pages[-1].title if pages else ""
+    ranked = rank_products(description, products, page_title=page_title)
+    results = []
+    for item in ranked:
+        data = item.to_dict()
+        data["matched_term_count"] = len(item.matched_terms)
+        data["missing_term_count"] = len(item.missing_terms)
+        results.append(data)
+    return results
+
+
+def _selected_part_result(best: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not best:
+        return None
+    return {
+        "part_number": best["part_number"],
+        "name": best["name"],
+        "url": best["url"],
+        "score": best["score"],
+        "matched_terms": best["matched_terms"],
+        "missing_terms": best["missing_terms"],
+        "evidence": best["evidence"],
+    }
+
+
+def _product_page_title_hit(page: PageSnapshot, part_number: str) -> ProductHit | None:
+    title = clean_text(page.title).replace(" | McMaster-Carr", "")
+    if not title or title.lower() == "mcmaster-carr":
+        return None
+    return ProductHit(
+        part_number=part_number,
+        name=title,
+        url=product_url(part_number),
+        context="",
+        sources=["product_page"],
+        confidence=1.0,
+    )
 
 
 def _rank_links_for_query(snapshot: PageSnapshot, query: str):

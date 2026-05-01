@@ -56,6 +56,26 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="mcmaster_find_exact_part",
+            description=(
+                "Given a detailed text description, headlessly search McMaster-Carr, "
+                "score rendered product rows/spec text, and return the single best "
+                "part-number candidate. Use this when the user supplied enough specs "
+                "to identify one exact catalog item."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string", "description": "Detailed part description without a part number."},
+                    "search_query": {"type": "string", "description": "Optional broad McMaster search phrase/category hint."},
+                    "max_candidates": {"type": "integer", "default": 10},
+                    "max_pages": {"type": "integer", "default": 20},
+                    "auto_drill_depth": {"type": "integer", "default": 2},
+                },
+                "required": ["description"],
+            },
+        ),
+        Tool(
             name="mcmaster_search",
             description="Headlessly search McMaster-Carr and return the current rendered page with products and navigable links.",
             inputSchema={
@@ -144,6 +164,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 def _tool_to_action(name: str) -> str:
     mapping = {
         "mcmaster_find_parts": "find_parts",
+        "mcmaster_find_exact_part": "find_exact_part",
         "mcmaster_search": "search",
         "mcmaster_open": "open",
         "mcmaster_current_page": "current_page",
@@ -159,7 +180,7 @@ def _tool_to_action(name: str) -> str:
 
 async def _call_worker(action: str, payload: dict[str, Any]) -> dict[str, Any]:
     loop = asyncio.get_running_loop()
-    timeout = float(os.environ.get("MCMASTER_NAV_TOOL_TIMEOUT", "180"))
+    timeout = float(os.environ.get("MCMASTER_NAV_TOOL_TIMEOUT", "300"))
     return await asyncio.wait_for(
         loop.run_in_executor(_executor, _dispatch, action, payload),
         timeout=timeout,
@@ -205,6 +226,14 @@ def _dispatch_once(action: str, payload: dict[str, Any]) -> dict[str, Any]:
             max_pages=int(payload.get("max_pages", 4)),
             auto_drill_depth=payload.get("auto_drill_depth"),
         ).to_dict()
+    if action == "find_exact_part":
+        return navigator.find_exact_part(
+            payload["description"],
+            search_query=payload.get("search_query"),
+            max_candidates=int(payload.get("max_candidates", 10)),
+            max_pages=int(payload.get("max_pages", 20)),
+            auto_drill_depth=payload.get("auto_drill_depth"),
+        )
     if action == "open":
         return navigator.open(payload["target"]).to_dict()
     if action == "current_page":

@@ -9,6 +9,7 @@ class ProductHit:
     part_number: str
     name: str = ""
     url: str = ""
+    context: str = ""
     sources: list[str] = field(default_factory=list)
     confidence: float = 0.0
 

@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcmaster-navigator-mcp"
-version = "0.1.0"
-description = "Unofficial headless MCP server for navigating McMaster-Carr and finding part numbers"
+version = "0.2.0"
+description = "Unofficial headless MCP server for navigating McMaster-Carr and resolving exact part numbers"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -53,6 +53,7 @@ pythonpath = ["src"]
 include = [
   "/src",
   "/tests",
+  "/benchmarks",
   "/README.md",
   "/LICENSE",
 ]
