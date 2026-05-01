@@ -1,0 +1,277 @@
+from __future__ import annotations
+
+import asyncio
+import atexit
+import os
+import json
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from io import TextIOWrapper
+from typing import Any
+
+import anyio
+from mcp.server import Server
+from mcp.server.stdio import stdio_server
+from mcp.types import TextContent, Tool
+
+from .extract import normalize_target, product_url, search_url
+from .navigator import McMasterNavigator
+
+
+server = Server("mcmaster-navigator")
+_executor = ThreadPoolExecutor(max_workers=1)
+_navigator: McMasterNavigator | None = None
+
+
+def _shutdown() -> None:
+    global _navigator
+    if _navigator is not None:
+        _navigator.close()
+        _navigator = None
+    _executor.shutdown(wait=False, cancel_futures=True)
+
+
+atexit.register(_shutdown)
+
+
+@server.list_tools()
+async def list_tools() -> list[Tool]:
+    return [
+        Tool(
+            name="mcmaster_find_parts",
+            description=(
+                "Headlessly search and browse McMaster-Carr for a text query, then return "
+                "part numbers found on rendered result/category pages. Use this as the "
+                "default tool when the user needs part numbers."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Text query such as 'stainless steel socket head cap screw'."},
+                    "max_results": {"type": "integer", "default": 50, "description": "Maximum unique part numbers to return."},
+                    "max_pages": {"type": "integer", "default": 4, "description": "Maximum rendered pages to visit."},
+                    "auto_drill_depth": {"type": "integer", "default": 2, "description": "Category levels to auto-open during search."},
+                },
+                "required": ["query"],
+            },
+        ),
+        Tool(
+            name="mcmaster_search",
+            description="Headlessly search McMaster-Carr and return the current rendered page with products and navigable links.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "max_depth": {"type": "integer", "default": 2},
+                },
+                "required": ["query"],
+            },
+        ),
+        Tool(
+            name="mcmaster_open",
+            description="Headlessly open a McMaster URL, path, part number, or search phrase and return extracted products and links.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "URL, path, part number, or search phrase.",
+                    }
+                },
+                "required": ["target"],
+            },
+        ),
+        Tool(
+            name="mcmaster_current_page",
+            description="Return the current rendered McMaster page state without navigating.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="mcmaster_follow_link",
+            description="Follow a link from the current page by index, text, or URL, then return the new rendered page state.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer", "description": "Link index from a previous page result."},
+                    "text": {"type": "string", "description": "Case-insensitive text to match in the current page links."},
+                    "url": {"type": "string", "description": "Explicit McMaster URL or path."},
+                },
+            },
+        ),
+        Tool(
+            name="mcmaster_back",
+            description="Go back in the headless browser history and return the new page state.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="mcmaster_url",
+            description="Generate a McMaster product or search URL without launching a browser.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "part_number": {"type": "string"},
+                    "search_query": {"type": "string"},
+                    "target": {"type": "string"},
+                },
+            },
+        ),
+        Tool(
+            name="mcmaster_doctor",
+            description="Return environment diagnostics for the headless McMaster navigator.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="mcmaster_close_browser",
+            description="Close and reset the headless browser session.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+    ]
+
+
+@server.call_tool()
+async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+    try:
+        args = arguments or {}
+        if name == "mcmaster_url":
+            return [_text(_url_result(args))]
+        action = _tool_to_action(name)
+        result = await _call_worker(action, args)
+        return [_text(result)]
+    except Exception as exc:
+        return [_text({"error": f"{type(exc).__name__}: {exc}"})]
+
+
+def _tool_to_action(name: str) -> str:
+    mapping = {
+        "mcmaster_find_parts": "find_parts",
+        "mcmaster_search": "search",
+        "mcmaster_open": "open",
+        "mcmaster_current_page": "current_page",
+        "mcmaster_follow_link": "follow_link",
+        "mcmaster_back": "back",
+        "mcmaster_doctor": "doctor",
+        "mcmaster_close_browser": "close_browser",
+    }
+    if name not in mapping:
+        raise ValueError(f"Unknown tool: {name}")
+    return mapping[name]
+
+
+async def _call_worker(action: str, payload: dict[str, Any]) -> dict[str, Any]:
+    loop = asyncio.get_running_loop()
+    timeout = float(os.environ.get("MCMASTER_NAV_TOOL_TIMEOUT", "180"))
+    return await asyncio.wait_for(
+        loop.run_in_executor(_executor, _dispatch, action, payload),
+        timeout=timeout,
+    )
+
+
+def _get_navigator() -> McMasterNavigator:
+    global _navigator
+    if _navigator is None:
+        _navigator = McMasterNavigator()
+    return _navigator
+
+
+def _dispatch(action: str, payload: dict[str, Any]) -> dict[str, Any]:
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            return _dispatch_once(action, payload)
+        except Exception as exc:
+            last_error = exc
+            if attempt == 0 and _is_recoverable_browser_error(exc):
+                _reset_navigator()
+                continue
+            raise
+    assert last_error is not None
+    raise last_error
+
+
+def _dispatch_once(action: str, payload: dict[str, Any]) -> dict[str, Any]:
+    global _navigator
+    navigator = _get_navigator()
+    if action == "doctor":
+        return navigator.doctor()
+    if action == "search":
+        return navigator.search(
+            payload["query"],
+            max_depth=payload.get("max_depth"),
+        ).to_dict()
+    if action == "find_parts":
+        return navigator.find_parts(
+            payload["query"],
+            max_results=int(payload.get("max_results", 50)),
+            max_pages=int(payload.get("max_pages", 4)),
+            auto_drill_depth=payload.get("auto_drill_depth"),
+        ).to_dict()
+    if action == "open":
+        return navigator.open(payload["target"]).to_dict()
+    if action == "current_page":
+        return navigator.current_page().to_dict()
+    if action == "follow_link":
+        index = payload.get("index")
+        return navigator.follow_link(
+            index=int(index) if index is not None else None,
+            text=payload.get("text"),
+            url=payload.get("url"),
+        ).to_dict()
+    if action == "back":
+        return navigator.back().to_dict()
+    if action == "close_browser":
+        _reset_navigator()
+        return {"closed": True}
+    raise ValueError(f"Unknown action: {action}")
+
+
+def _reset_navigator() -> None:
+    global _navigator
+    if _navigator is not None:
+        _navigator.close()
+        _navigator = None
+
+
+def _is_recoverable_browser_error(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(
+        marker in text
+        for marker in (
+            "sessionnotcreatedexception",
+            "nosuchwindowexception",
+            "chrome not reachable",
+            "target window already closed",
+            "web view not found",
+        )
+    )
+
+
+def _url_result(args: dict[str, Any]) -> dict[str, str]:
+    part_number = (args.get("part_number") or "").strip()
+    query = (args.get("search_query") or "").strip()
+    target = (args.get("target") or "").strip()
+    if part_number:
+        return {"type": "product", "url": product_url(part_number)}
+    if query:
+        return {"type": "search", "url": search_url(query)}
+    if target:
+        return {"type": "target", "url": normalize_target(target)}
+    raise ValueError("Provide part_number, search_query, or target")
+
+
+def _text(value: dict[str, Any]) -> TextContent:
+    return TextContent(type="text", text=json.dumps(value, indent=2))
+
+
+async def main_async() -> None:
+    protocol_stdout = anyio.wrap_file(TextIOWrapper(sys.stdout.buffer, encoding="utf-8"))
+    sys.stdout = sys.stderr
+    async with stdio_server(stdout=protocol_stdout) as (read_stream, write_stream):
+        await server.run(read_stream, write_stream, server.create_initialization_options())
+
+
+def main() -> None:
+    asyncio.run(main_async())
+
+
+if __name__ == "__main__":
+    main()
