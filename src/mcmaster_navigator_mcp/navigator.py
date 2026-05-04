@@ -447,6 +447,16 @@ def _merge_products(existing: list[ProductHit], incoming: list[ProductHit]) -> l
             current.name = product.name
         if product.context and (not current.context or len(product.context) > len(current.context)):
             current.context = product.context
+        for key, value in product.attributes.items():
+            if key not in current.attributes or len(value) > len(current.attributes[key]):
+                current.attributes[key] = value
+        if product.family and (not current.family or len(product.family) > len(current.family)):
+            current.family = product.family
+        for group in product.groups:
+            if group not in current.groups:
+                current.groups.append(group)
+        if product.selected_option and not current.selected_option:
+            current.selected_option = product.selected_option
         current.confidence = max(current.confidence, product.confidence)
     return sorted(by_part.values(), key=lambda item: (-item.confidence, item.part_number))
 

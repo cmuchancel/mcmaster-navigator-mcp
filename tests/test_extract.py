@@ -207,6 +207,41 @@ def test_table_row_context_includes_stack_pivot_groups_for_exact_specs():
     assert ranked[0].product.part_number == "90696A101"
 
 
+def test_snapshot_exposes_dynamic_table_schema_and_row_attributes():
+    html = """
+    <html>
+      <head><title>Stainless Steel Socket Head Screws | McMaster-Carr</title></head>
+      <body>
+        <a href="/screws/thread-size~m14-2-mm/">M14 x 2 mm</a>
+        <h2>Stainless Steel Socket Head Screws</h2>
+        <table>
+          <thead>
+            <tr><th></th><th>Lg.</th><th>Pkg. Qty.</th><th></th><th>Pkg.</th></tr>
+          </thead>
+          <tr class="_stackPivotRow_q8hpp_63"><td colspan="5">18-8 Stainless Steel</td></tr>
+          <tr class="_stackPivotRow_q8hpp_63"><td colspan="4">M14 x 2 mm</td></tr>
+          <tr><td>25 mm</td><td>5</td><td class="_partNumberCell_krvpj_1"><a href="/90696A101">90696A101</a></td><td class="_priceCell_14fib_77">8.76</td></tr>
+        </table>
+      </body>
+    </html>
+    """
+    snapshot = snapshot_from_html(html, "https://www.mcmaster.com/stainless-steel-socket-head-screws/")
+    by_part = {product.part_number: product for product in snapshot.products}
+
+    assert by_part["90696A101"].attributes["Lg."] == "25 mm"
+    assert by_part["90696A101"].attributes["Pkg. Qty."] == "5"
+    assert by_part["90696A101"].family == "Stainless Steel Socket Head Screws"
+    assert by_part["90696A101"].groups == ["18-8 Stainless Steel", "M14 x 2 mm"]
+
+    schema = snapshot.schemas[0]
+    table = schema["tables"][0]
+    row = table["rows"][0]
+    assert table["columns"] == ["Lg.", "Pkg. Qty."]
+    assert row["part_number"] == "90696A101"
+    assert row["attributes"]["Lg."] == "25 mm"
+    assert row["groups"] == ["18-8 Stainless Steel", "M14 x 2 mm"]
+
+
 def test_field_scoped_ranking_keeps_same_dimension_in_same_field():
     html = """
     <html>

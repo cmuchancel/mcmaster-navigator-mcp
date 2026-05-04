@@ -107,6 +107,22 @@ async def list_tools() -> list[Tool]:
             inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
+            name="mcmaster_extract_schema",
+            description=(
+                "Headlessly open or search a McMaster page and return dynamically extracted "
+                "filters, table columns, row attributes, and part-number rows. Use this "
+                "when an agent needs to inspect the live option schema for a product family."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "URL, path, part number, or search phrase."},
+                    "query": {"type": "string", "description": "Search query. If provided, uses McMaster search with auto-drill."},
+                    "max_depth": {"type": "integer", "default": 2},
+                },
+            },
+        ),
+        Tool(
             name="mcmaster_follow_link",
             description="Follow a link from the current page by index, text, or URL, then return the new rendered page state.",
             inputSchema={
@@ -168,6 +184,7 @@ def _tool_to_action(name: str) -> str:
         "mcmaster_search": "search",
         "mcmaster_open": "open",
         "mcmaster_current_page": "current_page",
+        "mcmaster_extract_schema": "extract_schema",
         "mcmaster_follow_link": "follow_link",
         "mcmaster_back": "back",
         "mcmaster_doctor": "doctor",
@@ -238,6 +255,26 @@ def _dispatch_once(action: str, payload: dict[str, Any]) -> dict[str, Any]:
         return navigator.open(payload["target"]).to_dict()
     if action == "current_page":
         return navigator.current_page().to_dict()
+    if action == "extract_schema":
+        query = (payload.get("query") or "").strip()
+        target = (payload.get("target") or "").strip()
+        if query:
+            snapshot = navigator.search(query, max_depth=payload.get("max_depth"))
+        elif target:
+            snapshot = navigator.open(target)
+        else:
+            snapshot = navigator.current_page()
+        return {
+            "url": snapshot.url,
+            "title": snapshot.title,
+            "page_type": snapshot.page_type,
+            "product_count": len(snapshot.products),
+            "part_numbers": snapshot.part_numbers,
+            "schema_count": len(snapshot.schemas),
+            "schemas": snapshot.schemas,
+            "links": [link.to_dict() for link in snapshot.links],
+            "diagnostics": snapshot.diagnostics,
+        }
     if action == "follow_link":
         index = payload.get("index")
         return navigator.follow_link(

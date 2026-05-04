@@ -10,6 +10,10 @@ class ProductHit:
     name: str = ""
     url: str = ""
     context: str = ""
+    attributes: dict[str, str] = field(default_factory=dict)
+    family: str = ""
+    groups: list[str] = field(default_factory=list)
+    selected_option: str = ""
     sources: list[str] = field(default_factory=list)
     confidence: float = 0.0
 
@@ -35,6 +39,7 @@ class PageSnapshot:
     page_type: str
     products: list[ProductHit] = field(default_factory=list)
     links: list[PageLink] = field(default_factory=list)
+    schemas: list[dict[str, Any]] = field(default_factory=list)
     part_numbers: list[str] = field(default_factory=list)
     text_preview: str = ""
     trail: list[str] = field(default_factory=list)
@@ -50,6 +55,8 @@ class PageSnapshot:
             "part_numbers": self.part_numbers,
             "link_count": len(self.links),
             "links": [link.to_dict() for link in self.links],
+            "schema_count": len(self.schemas),
+            "schemas": self.schemas,
             "text_preview": self.text_preview,
             "trail": self.trail,
             "diagnostics": self.diagnostics,
@@ -63,6 +70,7 @@ class PageSnapshot:
             "product_count": len(self.products),
             "part_numbers": self.part_numbers,
             "link_count": len(self.links),
+            "schema_count": len(self.schemas),
             "trail": self.trail,
             "diagnostics": self.diagnostics,
         }

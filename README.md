@@ -11,6 +11,7 @@ This project is not affiliated with, endorsed by, or sponsored by McMaster-Carr.
 - Headless-only browsing with SeleniumBase UC mode.
 - Stateful navigation across searches, categories, product pages, back, and current page.
 - Product number extraction from rendered links, images, and page HTML.
+- Dynamic schema extraction for rendered product tables: columns, row attributes, group headers, filters, and part-number rows.
 - Exact-part resolver that searches multiple query variants, reads rendered table rows, opens candidate product pages, and returns one best part number.
 - Row-aware scoring for dimensions, materials, selected options, model numbers, packaging, and accessory/product-type distinctions.
 - MCP-safe stdio transport; browser logs are kept off protocol stdout.
@@ -92,6 +93,7 @@ For a local virtual environment, point the MCP client at the installed console s
 - `mcmaster_find_parts`: broad search. Searches and browses rendered pages, then returns part numbers.
 - `mcmaster_search`: search McMaster and return the rendered page state.
 - `mcmaster_open`: open a URL, path, part number, or search phrase.
+- `mcmaster_extract_schema`: open/search a page and return dynamically extracted filters, table columns, row attributes, and part-number rows.
 - `mcmaster_follow_link`: follow a link from the current page by index, text, or URL.
 - `mcmaster_current_page`: inspect the current rendered page.
 - `mcmaster_back`: go back in browser history.
@@ -127,6 +129,45 @@ Expected output shape:
   "pages_visited": []
 }
 ```
+
+## Dynamic Page Schemas
+
+`mcmaster_extract_schema` exposes the live option schema found on rendered McMaster pages instead of assuming a fixed ontology for screws, springs, switches, fittings, and other part families.
+
+Example output shape:
+
+```json
+{
+  "title": "Stainless Steel Socket Head Screws | McMaster-Carr",
+  "schemas": [
+    {
+      "family_title": "Stainless Steel Socket Head Screws",
+      "filters": [
+        {"text": "M14 x 2 mm", "url": "https://www.mcmaster.com/..."}
+      ],
+      "tables": [
+        {
+          "title": "Stainless Steel Socket Head Screws",
+          "columns": ["Lg.", "Pkg. Qty."],
+          "rows": [
+            {
+              "part_number": "90696A101",
+              "family": "Stainless Steel Socket Head Screws",
+              "groups": ["18-8 Stainless Steel", "M14 x 2 mm"],
+              "attributes": {
+                "Lg.": "25 mm",
+                "Pkg. Qty.": "5"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+Agents can use this as a dynamic catalog interface: first discover the fields available on the current product-family page, then match normalized component constraints against the extracted row attributes.
 
 ## Environment Variables
 

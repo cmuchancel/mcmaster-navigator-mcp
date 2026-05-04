@@ -123,6 +123,7 @@ def snapshot_from_html(
     page_title = clean_text(title) or _title_from_soup(soup)
     products = extract_products(soup, url, max_products=max_products)
     links = extract_links(soup, url, max_links=max_links)
+    schemas = extract_page_schema(soup, url, links=links)
     text_preview = clean_text(soup.get_text(" ", strip=True))[:1200]
     part_numbers = sorted({product.part_number for product in products} | set(extract_part_numbers(html)))
     return PageSnapshot(
@@ -131,6 +132,7 @@ def snapshot_from_html(
         page_type=detect_page_type(url, page_title, soup),
         products=products,
         links=links,
+        schemas=schemas,
         part_numbers=part_numbers[:max_products],
         text_preview=text_preview,
         trail=trail or [],
@@ -144,10 +146,23 @@ def snapshot_from_html(
 def extract_products(soup: BeautifulSoup, current_url: str, *, max_products: int = 80) -> list[ProductHit]:
     hits: dict[str, ProductHit] = {}
 
-    def add(part_number: str, name: str, source: str, confidence: float, context: str = "") -> None:
+    def add(
+        part_number: str,
+        name: str,
+        source: str,
+        confidence: float,
+        context: str = "",
+        *,
+        attributes: dict[str, str] | None = None,
+        family: str = "",
+        groups: list[str] | None = None,
+        selected_option: str = "",
+    ) -> None:
         part = part_number.upper()
         label = _clean_product_name(name, part)
         product_context = _clean_product_context(context, part)
+        row_attributes = _clean_attributes(attributes or {}, part)
+        row_groups = [clean_text(group) for group in (groups or []) if clean_text(group)]
         existing = hits.get(part)
         if existing is None:
             hits[part] = ProductHit(
@@ -155,6 +170,10 @@ def extract_products(soup: BeautifulSoup, current_url: str, *, max_products: int
                 name=label,
                 url=product_url(part),
                 context=product_context,
+                attributes=row_attributes,
+                family=clean_text(family),
+                groups=row_groups,
+                selected_option=clean_text(selected_option),
                 sources=[source],
                 confidence=confidence,
             )
@@ -165,12 +184,33 @@ def extract_products(soup: BeautifulSoup, current_url: str, *, max_products: int
             existing.name = label
         if product_context and (not existing.context or len(product_context) > len(existing.context)):
             existing.context = product_context
+        for key, value in row_attributes.items():
+            if key not in existing.attributes or len(value) > len(existing.attributes[key]):
+                existing.attributes[key] = value
+        if family and (not existing.family or len(family) > len(existing.family)):
+            existing.family = clean_text(family)
+        for group in row_groups:
+            if group not in existing.groups:
+                existing.groups.append(group)
+        if selected_option and not existing.selected_option:
+            existing.selected_option = clean_text(selected_option)
         existing.confidence = max(existing.confidence, confidence)
 
     for anchor in soup.find_all("a", href=True):
         href = anchor.get("href", "")
         for part in _parts_from_url(href):
-            add(part, _anchor_context_name(anchor), "link", 0.95, _part_context_from_element(anchor, part))
+            row_data = _part_data_from_element(anchor, part)
+            add(
+                part,
+                _anchor_context_name(anchor),
+                "link",
+                0.95,
+                row_data["context"],
+                attributes=row_data["attributes"],
+                family=row_data["family"],
+                groups=row_data["groups"],
+                selected_option=row_data["selected_option"],
+            )
 
     for image in soup.find_all("img"):
         blob = " ".join(
@@ -185,7 +225,18 @@ def extract_products(soup: BeautifulSoup, current_url: str, *, max_products: int
         )
         label = clean_text(image.get("alt") or image.get("title") or "")
         for part in extract_part_numbers(blob):
-            add(part, label, "image", 0.8, _part_context_from_element(image, part))
+            row_data = _part_data_from_element(image, part)
+            add(
+                part,
+                label,
+                "image",
+                0.8,
+                row_data["context"],
+                attributes=row_data["attributes"],
+                family=row_data["family"],
+                groups=row_data["groups"],
+                selected_option=row_data["selected_option"],
+            )
 
     for part in extract_part_numbers(str(soup)):
         if part not in hits:
@@ -225,6 +276,114 @@ def extract_links(soup: BeautifulSoup, current_url: str, *, max_links: int = 100
         PageLink(index=index, text=text, url=url, kind=kind)
         for index, (_priority, text, url, kind) in enumerate(candidates[:max_links])
     ]
+
+
+def extract_page_schema(
+    soup: BeautifulSoup,
+    current_url: str,
+    *,
+    links: list[PageLink] | None = None,
+    max_tables: int = 12,
+    max_rows_per_table: int = 160,
+) -> list[dict[str, object]]:
+    """Extract live table/filter schemas without assuming a part-family ontology."""
+    page_title = _title_from_soup(soup)
+    page_links = links if links is not None else extract_links(soup, current_url, max_links=200)
+    filters = [
+        {
+            "text": link.text,
+            "url": link.url,
+        }
+        for link in page_links
+        if link.kind == "filter"
+    ]
+    tables = []
+    for table_index, table in enumerate(soup.find_all("table")):
+        if len(tables) >= max_tables:
+            break
+        table_rows = _extract_schema_rows(table, table_index, max_rows_per_table)
+        if not table_rows:
+            continue
+        columns: list[str] = []
+        families: list[str] = []
+        part_numbers: list[str] = []
+        for row in table_rows:
+            family = str(row.get("family") or "")
+            if family and family not in families:
+                families.append(family)
+            for part_number in row.get("part_numbers", []):
+                if isinstance(part_number, str) and part_number not in part_numbers:
+                    part_numbers.append(part_number)
+            attributes = row.get("attributes", {})
+            if isinstance(attributes, dict):
+                for column in attributes:
+                    if column and column not in columns:
+                        columns.append(column)
+        table_title = families[0] if families else _nearby_heading(table) or page_title
+        tables.append(
+            {
+                "index": table_index,
+                "title": table_title,
+                "columns": columns,
+                "row_count": len(table_rows),
+                "part_numbers": part_numbers,
+                "rows": table_rows,
+            }
+        )
+    tables.sort(
+        key=lambda table: (
+            0 if table.get("columns") else 1,
+            -len(table.get("columns", [])),
+            -int(table.get("row_count", 0)),
+            int(table.get("index", 0)),
+        )
+    )
+    if not filters and not tables:
+        return []
+    return [
+        {
+            "family_title": page_title,
+            "filters": filters[:100],
+            "tables": tables,
+        }
+    ]
+
+
+def _extract_schema_rows(table, table_index: int, max_rows: int) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    seen: set[tuple[str, tuple[tuple[str, str], ...], tuple[str, ...]]] = set()
+    for row_index, row in enumerate(table.find_all("tr")):
+        part_numbers = extract_part_numbers(str(row))
+        if not part_numbers:
+            continue
+        for part_number in part_numbers:
+            data = _table_row_data_from_row(row, part_number)
+            attributes = data["attributes"] if isinstance(data["attributes"], dict) else {}
+            groups = data["groups"] if isinstance(data["groups"], list) else []
+            key = (
+                part_number,
+                tuple(sorted((str(k), str(v)) for k, v in attributes.items())),
+                tuple(str(group) for group in groups),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(
+                {
+                    "table_index": table_index,
+                    "row_index": row_index,
+                    "part_number": part_number,
+                    "part_numbers": [part_number],
+                    "family": data["family"],
+                    "groups": groups,
+                    "selected_option": data["selected_option"],
+                    "attributes": attributes,
+                    "evidence": data["context"],
+                }
+            )
+            if len(rows) >= max_rows:
+                return rows
+    return rows
 
 
 def classify_link(text: str, url: str) -> str:
@@ -279,10 +438,10 @@ def _anchor_context_name(anchor) -> str:
     return own_text
 
 
-def _part_context_from_element(element, part_number: str) -> str:
-    table_context = _table_row_context(element, part_number)
-    if table_context:
-        return table_context
+def _part_data_from_element(element, part_number: str) -> dict[str, object]:
+    table_data = _table_row_data(element, part_number)
+    if table_data["context"]:
+        return table_data
     part = part_number.upper()
     candidates: list[tuple[int, int, str]] = []
     for distance, candidate in enumerate([element, *list(element.parents)[:8]]):
@@ -295,33 +454,51 @@ def _part_context_from_element(element, part_number: str) -> str:
         elif distance > 0 and 8 <= len(text) <= 500:
             candidates.append((distance + 10, abs(len(text) - 140), text))
     if not candidates:
-        return ""
+        return _empty_part_data()
     candidates.sort(key=lambda item: (item[0], item[1]))
-    return candidates[0][2]
+    return {
+        **_empty_part_data(),
+        "context": candidates[0][2],
+    }
 
 
 def _table_row_context(element, part_number: str) -> str:
+    return str(_table_row_data(element, part_number)["context"])
+
+
+def _table_row_data(element, part_number: str) -> dict[str, object]:
     row = element.find_parent("tr")
     if row is None:
-        return ""
+        return _empty_part_data()
+    return _table_row_data_from_row(row, part_number, element=element)
+
+
+def _table_row_data_from_row(row, part_number: str, *, element=None) -> dict[str, object]:
     row_text = clean_text(row.get_text(" ", strip=True))
-    if part_number.upper() not in row_text.upper():
-        return ""
+    if part_number.upper() not in row_text.upper() and part_number.upper() not in str(row).upper():
+        return _empty_part_data()
 
     selected_index = _cell_index(element, row, part_number)
     cell_elements = row.find_all(["td", "th"], recursive=False)
     cell_texts = [clean_text(cell.get_text(" ", strip=True)) for cell in cell_elements]
     if not any(cell_texts):
-        return row_text
+        return {
+            **_empty_part_data(),
+            "context": row_text,
+        }
 
     headers = _table_headers(row, len(cell_texts))
     selected_header = headers[selected_index] if selected_index is not None and selected_index < len(headers) else ""
+    family = ""
+    groups: list[str] = []
+    attributes: dict[str, str] = {}
     if headers:
         pairs = []
-        heading = _nearby_heading(row)
-        if heading:
-            pairs.append(f"Family: {heading}")
-        for group in _table_group_context(row):
+        family = _nearby_heading(row)
+        if family:
+            pairs.append(f"Family: {family}")
+        groups = _table_group_context(row)
+        for group in groups:
             pairs.append(f"Group: {group}")
         if selected_header:
             pairs.append(f"Selected option: {selected_header}")
@@ -333,11 +510,32 @@ def _table_row_context(element, part_number: str) -> str:
             cell = clean_text(cell)
             if not cell:
                 continue
+            if header:
+                attributes[header] = cell
             pairs.append(f"{header}: {cell}" if header else cell)
         context = clean_text("; ".join(pairs))
         if context:
-            return context
-    return row_text
+            return {
+                "context": context,
+                "attributes": attributes,
+                "family": family,
+                "groups": groups,
+                "selected_option": selected_header,
+            }
+    return {
+        **_empty_part_data(),
+        "context": row_text,
+    }
+
+
+def _empty_part_data() -> dict[str, object]:
+    return {
+        "context": "",
+        "attributes": {},
+        "family": "",
+        "groups": [],
+        "selected_option": "",
+    }
 
 
 def _table_group_context(row) -> list[str]:
@@ -512,6 +710,21 @@ def _best_part_context(soup: BeautifulSoup, part_number: str) -> str:
         return ""
     candidates.sort(key=lambda item: (item[0], item[1]))
     return candidates[0][2]
+
+
+def _clean_attributes(attributes: dict[str, str], part_number: str) -> dict[str, str]:
+    cleaned: dict[str, str] = {}
+    for key, value in attributes.items():
+        clean_key = clean_text(str(key)).strip(" :")
+        clean_value = clean_text(str(value))
+        clean_value = PART_RE.sub(" ", clean_value)
+        clean_value = clean_text(clean_value)
+        if not clean_key or not clean_value:
+            continue
+        if part_number.upper() == clean_value.upper():
+            continue
+        cleaned[clean_key] = clean_value[:240]
+    return cleaned
 
 
 def _clean_product_name(value: str, part_number: str) -> str:

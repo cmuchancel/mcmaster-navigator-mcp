@@ -395,7 +395,15 @@ def plural_variants(term: str) -> list[str]:
 
 
 def best_evidence(product: ProductHit, page_title: str = "") -> str:
-    pieces = [product.name, product.context]
+    attribute_text = "; ".join(
+        f"{key}: {value}"
+        for key, value in product.attributes.items()
+        if key and value
+    )
+    group_text = "; ".join(f"Group: {group}" for group in product.groups if group)
+    selected_option = f"Selected option: {product.selected_option}" if product.selected_option else ""
+    family = f"Family: {product.family}" if product.family else ""
+    pieces = [product.name, product.context, family, group_text, selected_option, attribute_text]
     cleaned: list[str] = []
     seen = set()
     for piece in pieces:
