@@ -671,7 +671,7 @@ def apply_constraint_matchers(rows: list[dict[str, Any]], matchers: list[Any]) -
             )
         ]
         after = len(unique_part_numbers(filtered))
-        if after == 0 and (before == 1 or (before > 0 and context_matcher_can_be_skipped(field, trace))):
+        if after == 0 and zero_matcher_can_be_skipped(field, before, trace):
             trace.append(
                 {
                     "constraint": clean_text(str(raw_matcher.get("constraint") or value)),
@@ -682,7 +682,7 @@ def apply_constraint_matchers(rows: list[dict[str, Any]], matchers: list[Any]) -
                     "before_unique_parts": before,
                     "after_unique_parts": before,
                     "skipped": True,
-                    "skip_reason": "constraint conflicts with already unique grounded match" if before == 1 else "broad page-context constraint conflicts with concrete field matches",
+                    "skip_reason": zero_skip_reason(field, before),
                 }
             )
             continue
@@ -703,6 +703,32 @@ def apply_constraint_matchers(rows: list[dict[str, Any]], matchers: list[Any]) -
     return current, trace
 
 
+def zero_matcher_can_be_skipped(field: str, before: int, trace: list[dict[str, Any]]) -> bool:
+    if before == 1:
+        return True
+    if context_matcher_can_be_skipped(field, trace):
+        return True
+    for step in trace:
+        if step.get("skipped"):
+            continue
+        step_field = clean_text(str(step.get("field", "")))
+        step_before = int(step.get("before_unique_parts") or 0)
+        step_after = int(step.get("after_unique_parts") or 0)
+        if step_after <= 0 or step_after >= step_before:
+            continue
+        if step_field == "selected_option" or step_field == "groups" or step_field.startswith("attributes."):
+            return True
+    return False
+
+
+def zero_skip_reason(field: str, before: int) -> str:
+    if before == 1:
+        return "constraint conflicts with already unique grounded match"
+    if field in {"family", "groups"}:
+        return "broad page-context constraint conflicts with concrete field matches"
+    return "constraint conflicts with narrowed grounded match"
+
+
 def context_matcher_can_be_skipped(field: str, trace: list[dict[str, Any]]) -> bool:
     if field not in {"family", "groups"}:
         return False
@@ -718,13 +744,15 @@ def context_matcher_can_be_skipped(field: str, trace: list[dict[str, Any]]) -> b
 
 def matcher_application_priority(matcher: dict[str, Any]) -> tuple[int, str]:
     field = clean_text(str(matcher.get("field", "")))
-    if field.startswith("attributes.") or field == "selected_option":
+    if field == "selected_option":
         return (0, field)
-    if field == "groups":
+    if field.startswith("attributes."):
         return (1, field)
-    if field == "family":
+    if field == "groups":
         return (2, field)
-    return (3, field)
+    if field == "family":
+        return (3, field)
+    return (4, field)
 
 
 def apply_option_variant_scope(rows: list[dict[str, Any]], matchers: list[Any]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:

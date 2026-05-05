@@ -432,3 +432,34 @@ def test_explicit_selected_option_label_adds_missing_matcher():
 
         matches, _trace = module.apply_constraint_matchers(rows, updated)
         assert module.unique_part_numbers(matches) == ["A2"]
+
+
+def test_selected_option_is_applied_before_attribute_matchers():
+    matchers = [
+        {"constraint": "Size", "field": "attributes.Size", "value": "1", "accepted_values": ["1"]},
+        {"constraint": "Selected option", "field": "selected_option", "value": "Package", "accepted_values": ["Package"]},
+    ]
+
+    for module in FILTER_MODULES:
+        ordered = sorted(matchers, key=module.matcher_application_priority)
+        assert ordered[0]["field"] == "selected_option"
+
+
+def test_bad_late_attribute_does_not_erase_narrowed_match_set():
+    rows = [
+        {"part_number": "A1", "family": "Demo", "groups": [], "attributes": {"A": "x", "C": "1"}},
+        {"part_number": "A2", "family": "Demo", "groups": [], "attributes": {"A": "x", "B": "other", "C": "2"}},
+        {"part_number": "A3", "family": "Demo", "groups": [], "attributes": {"A": "y", "B": "bad", "C": "1"}},
+    ]
+    matchers = [
+        {"constraint": "A", "field": "attributes.A", "value": "x", "accepted_values": ["x"]},
+        {"constraint": "bad mapped field", "field": "attributes.B", "value": "bad", "accepted_values": ["bad"]},
+        {"constraint": "C", "field": "attributes.C", "value": "1", "accepted_values": ["1"]},
+    ]
+
+    for module in FILTER_MODULES:
+        matches, trace = module.apply_constraint_matchers(rows, matchers)
+
+        assert module.unique_part_numbers(matches) == ["A1"]
+        assert trace[1]["skipped"] is True
+        assert trace[1]["skip_reason"] == "constraint conflicts with narrowed grounded match"
