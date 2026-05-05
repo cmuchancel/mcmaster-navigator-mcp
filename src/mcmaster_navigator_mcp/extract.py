@@ -352,38 +352,143 @@ def extract_page_schema(
 def _extract_schema_rows(table, table_index: int, max_rows: int) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     seen: set[tuple[str, tuple[tuple[str, str], ...], tuple[str, ...]]] = set()
+
+    def add_row(row_data: dict[str, object]) -> bool:
+        attributes = row_data["attributes"] if isinstance(row_data["attributes"], dict) else {}
+        groups = row_data["groups"] if isinstance(row_data["groups"], list) else []
+        part_number = str(row_data["part_number"])
+        key = (
+            part_number,
+            tuple(sorted((str(k), str(v)) for k, v in attributes.items())),
+            tuple(str(group) for group in groups),
+        )
+        if key in seen:
+            return False
+        seen.add(key)
+        rows.append(row_data)
+        return len(rows) >= max_rows
+
     for row_index, row in enumerate(table.find_all("tr")):
-        part_numbers = extract_part_numbers(str(row))
+        part_numbers = _primary_row_part_numbers(row) or extract_part_numbers(str(row))
         if not part_numbers:
             continue
+        base_data = None
         for part_number in part_numbers:
             data = _table_row_data_from_row(row, part_number)
-            attributes = data["attributes"] if isinstance(data["attributes"], dict) else {}
-            groups = data["groups"] if isinstance(data["groups"], list) else []
-            key = (
-                part_number,
-                tuple(sorted((str(k), str(v)) for k, v in attributes.items())),
-                tuple(str(group) for group in groups),
+            if base_data is None:
+                base_data = data
+            row_data = _schema_row_from_data(
+                table_index=table_index,
+                row_index=row_index,
+                part_number=part_number,
+                data=data,
             )
-            if key in seen:
+            if add_row(row_data):
+                return rows
+        if base_data is not None:
+            for row_data in _linked_option_rows(
+                row,
+                table_index=table_index,
+                row_index=row_index,
+                base_part_numbers=part_numbers,
+                base_data=base_data,
+            ):
+                if add_row(row_data):
+                    return rows
+    return rows
+
+
+def _schema_row_from_data(
+    *,
+    table_index: int,
+    row_index: int,
+    part_number: str,
+    data: dict[str, object],
+) -> dict[str, object]:
+    attributes = data["attributes"] if isinstance(data["attributes"], dict) else {}
+    groups = data["groups"] if isinstance(data["groups"], list) else []
+    return {
+        "table_index": table_index,
+        "row_index": row_index,
+        "part_number": part_number,
+        "part_numbers": [part_number],
+        "family": data["family"],
+        "groups": groups,
+        "selected_option": data["selected_option"],
+        "attributes": attributes,
+        "evidence": data["context"],
+    }
+
+
+def _primary_row_part_numbers(row) -> list[str]:
+    parts: list[str] = []
+    cells = row.find_all(["td", "th"], recursive=False)
+    for cell in cells:
+        classes = " ".join(cell.get("class", [])).lower()
+        if "partnumbercell" not in classes and "part-number" not in classes:
+            continue
+        for part_number in extract_part_numbers(cell.get_text(" ", strip=True)):
+            if part_number not in parts:
+                parts.append(part_number)
+    return parts
+
+
+def _linked_option_rows(
+    row,
+    *,
+    table_index: int,
+    row_index: int,
+    base_part_numbers: list[str],
+    base_data: dict[str, object],
+) -> list[dict[str, object]]:
+    base_parts = {part.upper() for part in base_part_numbers}
+    base_attributes = base_data["attributes"] if isinstance(base_data["attributes"], dict) else {}
+    base_groups = base_data["groups"] if isinstance(base_data["groups"], list) else []
+    cell_elements = row.find_all(["td", "th"], recursive=False)
+    cell_texts = [clean_text(cell.get_text(" ", strip=True)) for cell in cell_elements]
+    headers = _table_headers(row, len(cell_texts))
+    option_rows: list[dict[str, object]] = []
+    for index, cell in enumerate(cell_elements):
+        if not _looks_like_option_cell(cell):
+            continue
+        header = headers[index] if index < len(headers) else ""
+        option_key = header or "Selected Option"
+        for anchor in cell.find_all("a", href=True):
+            option_text = clean_text(anchor.get_text(" ", strip=True))
+            if not option_text or PART_RE.fullmatch(option_text):
                 continue
-            seen.add(key)
-            rows.append(
+            linked_parts = extract_part_numbers(anchor.get("href", ""))
+            variant_part = next((part for part in reversed(linked_parts) if part not in base_parts), "")
+            if not variant_part:
+                continue
+            attributes = {str(key): str(value) for key, value in base_attributes.items()}
+            attributes[option_key] = option_text
+            context = clean_text(f"{base_data['context']}; {option_key}: {option_text}")
+            option_rows.append(
                 {
                     "table_index": table_index,
                     "row_index": row_index,
-                    "part_number": part_number,
-                    "part_numbers": [part_number],
-                    "family": data["family"],
-                    "groups": groups,
-                    "selected_option": data["selected_option"],
+                    "part_number": variant_part,
+                    "part_numbers": [variant_part],
+                    "family": base_data["family"],
+                    "groups": base_groups,
+                    "selected_option": option_text,
                     "attributes": attributes,
-                    "evidence": data["context"],
+                    "evidence": context,
+                    "option_variant": True,
+                    "option_field": option_key,
+                    "base_part_numbers": list(base_part_numbers),
                 }
             )
-            if len(rows) >= max_rows:
-                return rows
-    return rows
+    return option_rows
+
+
+def _looks_like_option_cell(cell) -> bool:
+    classes = " ".join(cell.get("class", [])).lower()
+    if "easytoorder" in classes:
+        return True
+    anchors = cell.find_all("a", href=True)
+    return any(extract_part_numbers(anchor.get("href", "")) and clean_text(anchor.get_text(" ", strip=True)) for anchor in anchors)
 
 
 def classify_link(text: str, url: str) -> str:

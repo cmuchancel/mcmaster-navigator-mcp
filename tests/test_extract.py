@@ -242,6 +242,42 @@ def test_snapshot_exposes_dynamic_table_schema_and_row_attributes():
     assert row["groups"] == ["18-8 Stainless Steel", "M14 x 2 mm"]
 
 
+def test_schema_extracts_linked_option_variants_as_dynamic_attributes():
+    html = """
+    <html>
+      <head><title>Toggle Switches | McMaster-Carr</title></head>
+      <body>
+        <h2>Toggle Switches</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>No. of Terminals</th>
+              <th>Switch Designation</th>
+              <th>Choose a Wire Connection</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tr>
+            <td>2</td>
+            <td>SPST-NO</td>
+            <td class="_easyToOrderCell_12opd_1">
+              <a href="/7343K184-7343K185/">Quick-Disconnect Terminal</a>,
+              <a href="/7343K184-7343K186/">Screw Terminal</a>
+            </td>
+            <td class="_partNumberCell_krvpj_1"><a href="/7343K184/">7343K184</a></td>
+          </tr>
+        </table>
+      </body>
+    </html>
+    """
+    snapshot = snapshot_from_html(html, "https://www.mcmaster.com/toggle-switches/")
+    rows = {row["part_number"]: row for row in snapshot.schemas[0]["tables"][0]["rows"]}
+
+    assert rows["7343K184"]["attributes"]["No. of Terminals"] == "2"
+    assert rows["7343K185"]["attributes"]["Choose a Wire Connection"] == "Quick-Disconnect Terminal"
+    assert rows["7343K186"]["attributes"]["Choose a Wire Connection"] == "Screw Terminal"
+
+
 def test_field_scoped_ranking_keeps_same_dimension_in_same_field():
     html = """
     <html>

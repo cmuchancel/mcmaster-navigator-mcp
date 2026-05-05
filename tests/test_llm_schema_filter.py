@@ -55,3 +55,94 @@ def test_dynamic_matchers_can_return_ambiguous_multiple_matches():
 
     assert benchmark.unique_part_numbers(matches) == ["A1", "A2"]
     assert trace[-1]["after_unique_parts"] == 2
+
+
+def test_accepted_values_match_exact_live_field_values():
+    rows = [
+        {"part_number": "A1", "family": "Surface-Mount Hinges with Holes", "groups": ["Aluminum"], "attributes": {}},
+        {"part_number": "A2", "family": "Door Hinges", "groups": ["Steel"], "attributes": {}},
+    ]
+    matchers = [
+        {
+            "constraint": "surface mount door hinge",
+            "field": "family",
+            "value": "doors",
+            "accepted_values": ["Surface-Mount Hinges with Holes"],
+        },
+        {
+            "constraint": "aluminum",
+            "field": "groups",
+            "value": "Aluminum",
+            "accepted_values": ["Aluminum"],
+        },
+    ]
+
+    matches, trace = benchmark.apply_constraint_matchers(rows, matchers)
+
+    assert benchmark.unique_part_numbers(matches) == ["A1"]
+    assert trace[0]["after_unique_parts"] == 1
+
+
+def test_empty_accepted_values_remain_a_hard_filter_before_repair():
+    rows = [
+        {"part_number": "A1", "family": "Toggle Switches", "groups": ["2 Position"], "attributes": {"Terminals": "2"}},
+        {"part_number": "A2", "family": "Toggle Switches", "groups": ["3 Position"], "attributes": {"Terminals": "3"}},
+    ]
+    matchers = [
+        {
+            "constraint": "family",
+            "field": "family",
+            "value": "Toggle Switches",
+            "accepted_values": [],
+        },
+        {
+            "constraint": "3 terminals",
+            "field": "attributes.Terminals",
+            "value": "3",
+            "accepted_values": ["3"],
+        },
+    ]
+
+    matches, trace = benchmark.apply_constraint_matchers(rows, matchers)
+
+    assert benchmark.unique_part_numbers(matches) == []
+    assert trace[0]["after_unique_parts"] == 0
+
+
+def test_schema_search_queries_prefer_explicit_family_label():
+    description = "toggle switch. Family: Toggle Switches; No. of Terminals: 3"
+    normalized = {"search_queries": ["toggle switch 3 terminals", "maintained toggle switch"]}
+
+    queries = benchmark.schema_search_queries(description, normalized, limit=3)
+
+    assert queries == ["Toggle Switches", "toggle switch", "toggle switch 3 terminals"]
+
+
+def test_option_variants_require_matching_dynamic_option_constraint():
+    rows = [
+        {"part_number": "A1", "family": "Demo", "groups": [], "attributes": {"Size": "1"}},
+        {
+            "part_number": "A2",
+            "family": "Demo",
+            "groups": [],
+            "attributes": {"Size": "1", "Wire Connection": "Screw Terminal"},
+            "metadata": {
+                "option_variant": True,
+                "option_field": "Wire Connection",
+                "base_part_numbers": ["A1"],
+            },
+        },
+    ]
+
+    unconstrained, trace = benchmark.apply_option_variant_scope(
+        rows,
+        [{"field": "attributes.Size", "value": "1", "accepted_values": ["1"]}],
+    )
+    constrained, _ = benchmark.apply_option_variant_scope(
+        rows,
+        [{"field": "attributes.Wire Connection", "value": "Screw Terminal", "accepted_values": ["Screw Terminal"]}],
+    )
+
+    assert benchmark.unique_part_numbers(unconstrained) == ["A1"]
+    assert trace["removed_rows"] == 1
+    assert benchmark.unique_part_numbers(constrained) == ["A1", "A2"]
