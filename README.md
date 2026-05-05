@@ -38,7 +38,7 @@ pip install mcmaster-navigator-mcp
 You can also send someone a built wheel:
 
 ```bash
-pip install /path/to/mcmaster_navigator_mcp-0.3.0-py3-none-any.whl
+pip install /path/to/mcmaster_navigator_mcp-0.4.0-py3-none-any.whl
 ```
 
 For local development:
@@ -178,7 +178,7 @@ Agents can use this as a dynamic catalog interface: first discover the fields av
 2. Headlessly search all root queries, then spend remaining page budget on ranked live links.
 3. Extract dynamic table rows, group headings, option links, and attributes from rendered pages.
 4. Use GPT to map requested constraints to the live fields and exact live values.
-5. Deterministically filter rows. If the first mapping conflicts with the live schema, GPT repairs the mapping from the extracted field/value schema.
+5. Deterministically filter rows, grounding explicit `Family:`, `Group:`, selected-option, model-number, and attribute labels against the live schema. If the first mapping conflicts with the live schema, GPT repairs the mapping from the extracted field/value schema.
 
 The resolver returns one part only when the filtered live rows have one unique part number. If the text is under-specified, it returns multiple candidates as `ambiguous`; if the page schema cannot support the requested constraints, it returns `unresolved`.
 
@@ -221,12 +221,20 @@ reuse_browser: false
 Latest dynamic schema gate:
 
 ```text
-benchmark_runs/llm_schema_stratified10_final_gate
-10/10 unique top-1 exact part recovery
-categories: Building & Grounds, Electrical & Lighting, Fabricating, Fastening & Joining, Filtering
+benchmark_runs/llm_schema_100_final7
+100/100 unique exact part recovery
+100/100 top-1 exact part recovery
+100/100 returned exactly one part
+mean lookup time: 49.800 seconds
+total runtime: 5,033.867 seconds
+categories: Building & Grounds, Electrical & Lighting, Fabricating, Fastening & Joining, Filtering, Furniture & Storage, Hand Tools, Hardware, Heating & Cooling, Lubricating, Measuring & Inspecting, Pipe Tubing Hose Fittings, Plumbing & Janitorial, Power Transmission
 model: gpt-5.4-mini
-LLM usage: 75,751 tokens, 31 calls
-token cap: 240,000 for the run
+LLM usage: 675,918 tokens, 300 calls
+token cap: 1,600,000 for the run
+max_pages: 8
+llm_max_searches: 2
+llm_max_rows: 700
+llm_max_field_values: 160
 ```
 
 The benchmark intentionally includes details needed to identify one row or product option, such as material, model number, dimensions, selected option, package/each choice, and compatible manufacturer models.
