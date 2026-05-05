@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+from mcmaster_navigator_mcp import schema_resolver
+
 
 ROOT = Path(__file__).resolve().parents[1]
 BENCHMARK = ROOT / "benchmarks" / "mcmaster_retrieval_benchmark.py"
@@ -10,6 +12,7 @@ SPEC = importlib.util.spec_from_file_location("mcmaster_retrieval_benchmark", BE
 assert SPEC is not None and SPEC.loader is not None
 benchmark = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(benchmark)
+FILTER_MODULES = (benchmark, schema_resolver)
 
 
 def test_dynamic_matchers_filter_to_unique_part_without_field_hardcoding():
@@ -107,7 +110,7 @@ def test_empty_family_values_do_not_erase_unique_attribute_match():
 
     assert benchmark.unique_part_numbers(matches) == ["A2"]
     assert trace[-1]["skipped"] is True
-    assert benchmark.should_repair_matchers(matchers, trace, matches) is True
+    assert benchmark.should_repair_matchers(matchers, trace, matches) is False
 
 
 def test_schema_search_queries_prefer_explicit_family_label():
@@ -250,3 +253,142 @@ def test_concrete_attributes_apply_before_conflicting_family_label():
 
     assert benchmark.unique_part_numbers(matches) == ["A1"]
     assert trace[-1]["skipped"] is True
+
+
+def test_attribute_unit_header_alias_matches_value_with_embedded_unit():
+    rows = [
+        {
+            "part_number": "1095K112",
+            "family": "Grease Fittings",
+            "groups": ["M10 × 1.25 mm Metric Thread"],
+            "attributes": {
+                "Material": "Zinc-Plated Steel",
+                "Overall Ht.": "15 mm",
+                "Thread Lg.": "5.5 mm",
+                "Shank Lg.": "5.5 mm",
+                "Hex Size": "11 mm",
+                "Max. Pressure, psi": "1,450",
+                "Pkg. Qty.": "10",
+            },
+        },
+        {
+            "part_number": "1095K109",
+            "family": "Grease Fittings",
+            "groups": ["M8 × 0.75 mm Metric Thread"],
+            "attributes": {
+                "Material": "Zinc-Plated Steel",
+                "Overall Ht., mm": "15",
+                "Thread Lg., mm": "5.5",
+                "Shank Lg., mm": "5.5",
+                "Hex Size, mm": "9",
+                "Max. Pressure, psi": "1,450",
+                "Pkg. Qty.": "10",
+            },
+        },
+    ]
+    matchers = [
+        {"field": "attributes.Material", "value": "Zinc-Plated Steel", "accepted_values": ["Zinc-Plated Steel"]},
+        {"field": "attributes.Overall Ht., mm", "value": "15 mm", "accepted_values": ["15"]},
+        {"field": "attributes.Thread Lg., mm", "value": "5.5 mm", "accepted_values": ["5.5"]},
+        {"field": "attributes.Shank Lg., mm", "value": "5.5 mm", "accepted_values": ["5.5"]},
+        {"field": "attributes.Hex Size, mm", "value": "11 mm", "accepted_values": ["11"]},
+        {"field": "attributes.Max. Pressure, psi", "value": "1,450 psi", "accepted_values": ["1,450"]},
+        {"field": "attributes.Pkg. Qty.", "value": "10", "accepted_values": ["10"]},
+        {"field": "groups", "value": "M10 × 1.25 mm Metric Thread", "accepted_values": ["M10 × 1.25 mm Metric Thread"]},
+    ]
+
+    for module in FILTER_MODULES:
+        matches, trace = module.apply_constraint_matchers(rows, matchers)
+
+        assert module.unique_part_numbers(matches) == ["1095K112"]
+        assert trace[-1]["after_unique_parts"] == 1
+
+
+def test_repeated_group_labels_do_not_cross_pollinate_group_matchers():
+    rows = [
+        {"part_number": "A1", "family": "Digital Calipers", "groups": ["Mitutoyo", "With SPC Data Output"], "attributes": {}},
+        {"part_number": "A2", "family": "Digital Calipers", "groups": ["Mitutoyo", "Without SPC Data Output"], "attributes": {}},
+    ]
+    matchers = [
+        {"constraint": "Brand/Group", "field": "groups", "value": "Mitutoyo", "accepted_values": ["Mitutoyo"]},
+        {"constraint": "Data output", "field": "groups", "value": "SPC Data Output", "accepted_values": ["With SPC Data Output"]},
+    ]
+    description = "Group: Mitutoyo; Group: With SPC Data Output"
+
+    for module in FILTER_MODULES:
+        updated = module.apply_explicit_label_values(description, matchers, rows)
+        assert updated[0]["accepted_values"] == ["Mitutoyo"]
+        assert updated[1]["accepted_values"] == ["With SPC Data Output"]
+
+        matches, _trace = module.apply_constraint_matchers(rows, updated)
+        assert module.unique_part_numbers(matches) == ["A1"]
+
+
+def test_literal_identifier_is_grounded_to_live_dynamic_field():
+    rows = [
+        {"part_number": "A1", "family": "Digital Calipers", "groups": [], "attributes": {"Mfr. Model No.": "500-171-32"}},
+        {"part_number": "A2", "family": "Digital Calipers", "groups": [], "attributes": {"Mfr. Model No.": "500-196-32"}},
+    ]
+    description = "Mitutoyo digital caliper, Model Number 500-171-32"
+
+    for module in FILTER_MODULES:
+        matchers = module.augment_literal_identifier_matchers(description, [], rows)
+        assert matchers == [
+            {
+                "constraint": "literal identifier",
+                "field": "attributes.Mfr. Model No.",
+                "value": "500-171-32",
+                "comparator": "equals_normalized",
+                "accepted_values": ["500-171-32"],
+            }
+        ]
+
+        matches, _trace = module.apply_constraint_matchers(rows, matchers)
+        assert module.unique_part_numbers(matches) == ["A1"]
+
+
+def test_literal_identifier_grounding_ignores_dimension_fields():
+    rows = [
+        {"part_number": "A1", "family": "Hinges", "groups": [], "attributes": {"Door Leaf Ht.": '1 3/16 "'}},
+    ]
+    description = 'hinge, 1-3/16" door leaf width'
+
+    for module in FILTER_MODULES:
+        assert module.augment_literal_identifier_matchers(description, [], rows) == []
+
+
+def test_ungrounded_row_text_matcher_does_not_erase_unique_match():
+    rows = [
+        {"part_number": "A1", "family": "Demo", "groups": [], "attributes": {"Size": "1"}},
+        {"part_number": "A2", "family": "Demo", "groups": [], "attributes": {"Size": "2"}},
+    ]
+    matchers = [
+        {"constraint": "size", "field": "attributes.Size", "value": "1", "accepted_values": ["1"]},
+        {"constraint": "style", "field": "row_text", "value": "straight", "accepted_values": []},
+    ]
+
+    for module in FILTER_MODULES:
+        matches, trace = module.apply_constraint_matchers(rows, matchers)
+
+        assert module.unique_part_numbers(matches) == ["A1"]
+        assert trace[-1]["skipped"] is True
+        assert module.should_repair_matchers(matchers, trace, matches) is False
+
+
+def test_late_attribute_conflict_does_not_erase_unique_match():
+    rows = [
+        {"part_number": "A1", "family": "Tubing", "groups": [], "attributes": {"ID": "1mm", "OD": "3mm"}},
+        {"part_number": "A2", "family": "Tubing", "groups": [], "attributes": {"ID": "2mm", "OD": "3mm", "Temper Rating": "Soft"}},
+    ]
+    matchers = [
+        {"constraint": "ID", "field": "attributes.ID", "value": "1mm", "accepted_values": ["1mm"]},
+        {"constraint": "OD", "field": "attributes.OD", "value": "3mm", "accepted_values": ["3mm"]},
+        {"constraint": "soft", "field": "attributes.Temper Rating", "value": "Soft", "accepted_values": ["Soft"]},
+    ]
+
+    for module in FILTER_MODULES:
+        matches, trace = module.apply_constraint_matchers(rows, matchers)
+
+        assert module.unique_part_numbers(matches) == ["A1"]
+        assert trace[-1]["skipped"] is True
+        assert module.should_repair_matchers(matchers, trace, matches) is False

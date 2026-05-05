@@ -8,10 +8,16 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from .extract import clean_text
+from .extract import PART_RE, clean_text
 from .models import PageSnapshot
 from .navigator import McMasterNavigator, _rank_links_for_query
 from .rank import derive_search_queries, normalize, term_matches
+
+LITERAL_IDENTIFIER_RE = re.compile(
+    r"\b(?=[A-Z0-9./-]{5,}\b)(?=[A-Z0-9./-]*\d)"
+    r"(?:[A-Z]+\d[A-Z0-9./-]*|\d+[A-Z][A-Z0-9./-]*|\d+(?:[-/][A-Z0-9]+)+|[A-Z0-9]+(?:[-/][A-Z0-9]+)+)\b",
+    re.IGNORECASE,
+)
 
 
 class BudgetExceeded(RuntimeError):
@@ -170,6 +176,7 @@ def resolve_exact_part_dynamic(
         )
         mapped["matchers"] = value_normalization.get("matchers", mapped.get("matchers", []))
         mapped["matchers"] = apply_explicit_label_values(description, mapped.get("matchers", []), rows)
+        mapped["matchers"] = augment_literal_identifier_matchers(description, mapped.get("matchers", []), rows)
         llm_payloads["mapped"] = mapped
         llm_payloads["value_normalization"] = value_normalization
         matches, filter_trace = apply_constraint_matchers(rows, mapped.get("matchers", []))
@@ -193,6 +200,7 @@ def resolve_exact_part_dynamic(
             repaired_matchers = repair.get("matchers", [])
             if repaired_matchers:
                 repaired_matchers = apply_explicit_label_values(description, repaired_matchers, rows)
+                repaired_matchers = augment_literal_identifier_matchers(description, repaired_matchers, rows)
                 mapped["matchers"] = repaired_matchers
                 llm_payloads["mapped"] = mapped
                 matches, filter_trace = apply_constraint_matchers(rows, repaired_matchers)
@@ -402,6 +410,21 @@ def apply_constraint_matchers(rows: list[dict[str, Any]], matchers: list[Any]) -
         if not field or not value:
             continue
         before = len(unique_part_numbers(current))
+        if accepted_values_provided and not accepted_values:
+            trace.append(
+                {
+                    "constraint": clean_text(str(raw_matcher.get("constraint") or value)),
+                    "field": field,
+                    "value": value,
+                    "comparator": comparator,
+                    "accepted_values": [],
+                    "before_unique_parts": before,
+                    "after_unique_parts": before,
+                    "skipped": True,
+                    "skip_reason": "matcher has no grounded live values",
+                }
+            )
+            continue
         filtered = [
             row
             for row in current
@@ -415,7 +438,7 @@ def apply_constraint_matchers(rows: list[dict[str, Any]], matchers: list[Any]) -
             )
         ]
         after = len(unique_part_numbers(filtered))
-        if after == 0 and before == 1 and field == "family":
+        if after == 0 and (before == 1 or (before > 0 and context_matcher_can_be_skipped(field, trace))):
             trace.append(
                 {
                     "constraint": clean_text(str(raw_matcher.get("constraint") or value)),
@@ -426,7 +449,7 @@ def apply_constraint_matchers(rows: list[dict[str, Any]], matchers: list[Any]) -
                     "before_unique_parts": before,
                     "after_unique_parts": before,
                     "skipped": True,
-                    "skip_reason": "broad family constraint conflicts with already unique concrete match",
+                    "skip_reason": "constraint conflicts with already unique grounded match" if before == 1 else "broad page-context constraint conflicts with concrete field matches",
                 }
             )
             continue
@@ -445,6 +468,19 @@ def apply_constraint_matchers(rows: list[dict[str, Any]], matchers: list[Any]) -
         if not current:
             break
     return current, trace
+
+
+def context_matcher_can_be_skipped(field: str, trace: list[dict[str, Any]]) -> bool:
+    if field not in {"family", "groups"}:
+        return False
+    for step in trace:
+        step_field = clean_text(str(step.get("field", "")))
+        if step.get("skipped"):
+            continue
+        if step_field == "selected_option" or step_field.startswith("attributes."):
+            if int(step.get("after_unique_parts") or 0) > 0:
+                return True
+    return False
 
 
 def matcher_application_priority(matcher: dict[str, Any]) -> tuple[int, str]:
@@ -508,8 +544,10 @@ def row_matches(
     if accepted_values_provided:
         if not accepted_values:
             return False
-        accepted = {normalize(canonical_compare_text(item)) for item in accepted_values}
-        return any(normalize(canonical_compare_text(item)) in accepted for item in row_field_values(row, field))
+        accepted = set()
+        for item in accepted_values:
+            accepted.update(compare_value_variants(field, item))
+        return any(compare_value_variants(field, item).intersection(accepted) for item in row_field_values(row, field))
     evidence = row_field_text(row, field)
     if not evidence:
         return False
@@ -542,8 +580,76 @@ def row_field_values(row: dict[str, Any], field: str) -> list[str]:
         key = field.split(".", 1)[1]
         attributes = row.get("attributes", {})
         if isinstance(attributes, dict):
-            return [str(attributes.get(key, ""))]
+            if key in attributes:
+                return attribute_value_variants(field, key, str(attributes.get(key, "")))
+            requested_signatures = attribute_label_signatures(key)
+            values: list[str] = []
+            for attribute_key, attribute_value in attributes.items():
+                if requested_signatures.intersection(attribute_label_signatures(str(attribute_key))):
+                    for variant in attribute_value_variants(field, str(attribute_key), str(attribute_value)):
+                        if variant and variant not in values:
+                            values.append(variant)
+            return values
     return []
+
+
+def attribute_label_signatures(value: str) -> set[str]:
+    text = clean_text(value).strip(" :")
+    if not text:
+        return set()
+    signatures = {normalize_label(text)}
+    if "," in text:
+        signatures.add(normalize_label(text.rsplit(",", 1)[0]))
+    return {signature for signature in signatures if signature}
+
+
+def attribute_value_variants(requested_field: str, actual_key: str, value: str) -> list[str]:
+    values: list[str] = []
+
+    def add(item: str) -> None:
+        item = clean_text(item)
+        if item and item not in values:
+            values.append(item)
+
+    add(value)
+    for unit in attribute_label_units(requested_field, actual_key):
+        add(f"{value} {unit}")
+        stripped = strip_trailing_unit(value, unit)
+        if stripped:
+            add(stripped)
+    return values
+
+
+def attribute_label_units(*labels: str) -> list[str]:
+    units: list[str] = []
+    for label in labels:
+        text = clean_text(label)
+        if text.startswith("attributes."):
+            text = text.split(".", 1)[1]
+        if "," not in text:
+            continue
+        unit = clean_text(text.rsplit(",", 1)[1]).strip(" .")
+        if unit and unit not in units:
+            units.append(unit)
+    return units
+
+
+def strip_trailing_unit(value: str, unit: str) -> str:
+    value_norm = normalize(canonical_compare_text(value))
+    unit_norm = normalize(canonical_compare_text(unit))
+    if not value_norm or not unit_norm:
+        return ""
+    if value_norm == unit_norm:
+        return ""
+    suffix = f" {unit_norm}"
+    if value_norm.endswith(suffix):
+        return value_norm[: -len(suffix)].strip()
+    return ""
+
+
+def compare_value_variants(field: str, value: str) -> set[str]:
+    variants = attribute_value_variants(field, field, value) if field.startswith("attributes.") else [value]
+    return {normalize(canonical_compare_text(variant)) for variant in variants if clean_text(variant)}
 
 
 def row_text(row: dict[str, Any]) -> str:
@@ -885,7 +991,11 @@ def apply_explicit_label_values(description: str, matchers: list[Any], rows: lis
         if field == "family":
             label_values = labels.get("family", [])
         elif field == "groups":
-            label_values = labels.get("group", [])
+            label_values = [
+                label_value
+                for label_value in labels.get("group", [])
+                if label_value_matches_matcher(label_value, matcher)
+            ]
         elif field.startswith("attributes."):
             exact_field, label_values = explicit_attribute_field_for_matcher(matcher, labels, field_values)
             if exact_field:
@@ -897,6 +1007,109 @@ def apply_explicit_label_values(description: str, matchers: list[Any], rows: lis
                     accepted.append(live_value)
         updated.append({**matcher, "accepted_values": accepted} if "accepted_values" in matcher else matcher)
     return updated
+
+
+def augment_literal_identifier_matchers(description: str, matchers: list[Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    updated = [matcher for matcher in matchers if isinstance(matcher, dict)]
+    existing_keys = {
+        (
+            clean_text(str(matcher.get("field", ""))),
+            tuple(clean_text(str(value)) for value in matcher.get("accepted_values", []) if clean_text(str(value))),
+        )
+        for matcher in updated
+    }
+    field_values = all_field_values(rows, max_values=1000)
+    for identifier in literal_identifiers(description):
+        candidate = best_identifier_field(identifier, field_values)
+        if candidate is None:
+            continue
+        field, accepted_value = candidate
+        key = (field, (accepted_value,))
+        if key in existing_keys:
+            continue
+        updated.append(
+            {
+                "constraint": "literal identifier",
+                "field": field,
+                "value": identifier,
+                "comparator": "equals_normalized",
+                "accepted_values": [accepted_value],
+            }
+        )
+        existing_keys.add(key)
+    return updated
+
+
+def literal_identifiers(description: str) -> list[str]:
+    identifiers: list[str] = []
+    for match in LITERAL_IDENTIFIER_RE.finditer(description):
+        identifier = clean_text(match.group(0)).strip(".,;:()[]{}")
+        if not identifier or PART_RE.fullmatch(identifier):
+            continue
+        if identifier not in identifiers:
+            identifiers.append(identifier)
+    return identifiers
+
+
+def best_identifier_field(identifier: str, field_values: dict[str, list[str]]) -> tuple[str, str] | None:
+    exact: list[tuple[int, str, str]] = []
+    containing: list[tuple[int, str, str]] = []
+    identifier_norm = normalize(canonical_compare_text(identifier))
+    for field, values in field_values.items():
+        if field in {"family", "groups", "selected_option"}:
+            continue
+        if not is_identifier_field(field):
+            continue
+        for value in values:
+            value_norm = normalize(canonical_compare_text(value))
+            if value_norm == identifier_norm:
+                exact.append((len(value), field, value))
+            elif identifier_norm and identifier_norm in value_norm:
+                containing.append((len(value), field, value))
+    candidates = exact or containing
+    if not candidates:
+        return None
+    _length, field, value = sorted(candidates, key=lambda item: (item[0], item[1], item[2]))[0]
+    return field, value
+
+
+def is_identifier_field(field: str) -> bool:
+    field_norm = normalize(canonical_compare_text(field))
+    identifier_terms = {
+        "model",
+        "mfr",
+        "manufacturer",
+        "series",
+        "spec",
+        "specs",
+        "standard",
+        "no",
+        "number",
+        "part",
+        "grade",
+        "class",
+    }
+    tokens = set(field_norm.split())
+    return bool(tokens.intersection(identifier_terms))
+
+
+def label_value_matches_matcher(label_value: str, matcher: dict[str, Any]) -> bool:
+    label_norm = normalize(canonical_compare_text(label_value))
+    candidates = [
+        clean_text(str(matcher.get("value", ""))),
+        clean_text(str(matcher.get("constraint", ""))),
+    ]
+    for candidate in candidates:
+        candidate_norm = normalize(canonical_compare_text(candidate))
+        if not candidate_norm:
+            continue
+        if label_norm == candidate_norm or label_norm in candidate_norm or candidate_norm in label_norm:
+            return True
+        candidate_tokens = set(constraint_tokens(candidate))
+        label_tokens = set(constraint_tokens(label_value))
+        if candidate_tokens and candidate_tokens.issubset(label_tokens):
+            return True
+    return False
 
 
 def explicit_attribute_field_for_matcher(
@@ -960,10 +1173,15 @@ def same_catalog_value(left: str, right: str) -> bool:
 def should_repair_matchers(matchers: list[Any], trace: list[dict[str, Any]], matches: list[dict[str, Any]]) -> bool:
     if not matches:
         return True
+    if len(unique_part_numbers(matches)) == 1:
+        return False
     for matcher in matchers:
         if isinstance(matcher, dict) and "accepted_values" in matcher and not matcher.get("accepted_values"):
             return True
-    return any(int(step.get("before_unique_parts") or 0) > 0 and int(step.get("after_unique_parts") or 0) == 0 for step in trace)
+    return any(
+        not step.get("skipped") and int(step.get("before_unique_parts") or 0) > 0 and int(step.get("after_unique_parts") or 0) == 0
+        for step in trace
+    )
 
 
 def constraint_tokens(value: str) -> list[str]:
