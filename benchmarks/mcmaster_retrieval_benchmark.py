@@ -3,10 +3,13 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import re
 import statistics
 import sys
 import time
+import urllib.error
+import urllib.request
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,7 +23,9 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from mcmaster_navigator_mcp.extract import PART_RE, clean_text
+from mcmaster_navigator_mcp.models import PageSnapshot
 from mcmaster_navigator_mcp.navigator import McMasterNavigator
+from mcmaster_navigator_mcp.rank import derive_search_queries, normalize, term_matches
 
 
 SEED_QUERIES: list[tuple[str, str]] = [
@@ -75,15 +80,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--reuse-browser", action="store_true", help="Reuse one browser for all scored seeds.")
     parser.add_argument("--settle-seconds", type=float)
+    parser.add_argument(
+        "--selector",
+        choices=["deterministic", "llm-schema"],
+        default="deterministic",
+        help="Use the existing deterministic ranker or the schema-driven LLM constraint filter.",
+    )
+    parser.add_argument("--llm-model", default="")
+    parser.add_argument("--llm-env-file", type=Path, action="append", default=[])
+    parser.add_argument("--llm-token-budget", type=int, default=2_500_000)
+    parser.add_argument("--llm-max-searches", type=int, default=3)
+    parser.add_argument("--llm-max-rows", type=int, default=1200)
+    parser.add_argument("--llm-max-field-values", type=int, default=80)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     if args.settle_seconds is not None:
-        import os
-
         os.environ["MCMASTER_NAV_SETTLE_SECONDS"] = str(args.settle_seconds)
+    for env_file in args.llm_env_file:
+        load_env_file(env_file)
+    llm_client = None
+    token_budget = None
+    if args.selector == "llm-schema":
+        model = args.llm_model or os.getenv("OPENAI_MODEL") or os.getenv("FUSION_LLM_MODEL") or "gpt-5.4-mini"
+        api_key = os.getenv("OPENAI_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY is required for --selector llm-schema")
+        token_budget = TokenBudget(args.llm_token_budget)
+        llm_client = OpenAIJsonClient(api_key=api_key, model=model, budget=token_budget)
 
     run_dir = args.run_dir or ROOT / "benchmark_runs" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -113,7 +139,7 @@ def main() -> None:
                 navigator.close()
                 navigator = McMasterNavigator()
             print(f"score {index}/{args.target} {part_number} [{seed['category']}]")
-            result = score_seed(navigator, seed, args)
+            result = score_seed(navigator, seed, args, llm_client=llm_client, token_budget=token_budget)
             append_jsonl(results_path, result)
             results.append(result)
             completed.add(part_number)
@@ -122,6 +148,8 @@ def main() -> None:
             print(f"  -> {rank_text}; returned={result['returned_count']}; {elapsed(started)} elapsed")
 
         summary = summarize(seeds[: args.target], results, args, run_dir, time.time() - started)
+        if token_budget is not None:
+            summary["llm_usage"] = token_budget.to_dict()
         summary_path.write_text(json.dumps(summary, indent=2) + "\n")
         write_csv(csv_path, results)
         print(json.dumps(summary, indent=2))
@@ -202,7 +230,18 @@ def collect_seeds(
     return seeds
 
 
-def score_seed(navigator: McMasterNavigator, seed: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+def score_seed(
+    navigator: McMasterNavigator,
+    seed: dict[str, Any],
+    args: argparse.Namespace,
+    *,
+    llm_client: "OpenAIJsonClient | None" = None,
+    token_budget: "TokenBudget | None" = None,
+) -> dict[str, Any]:
+    if args.selector == "llm-schema":
+        if llm_client is None or token_budget is None:
+            raise RuntimeError("llm-schema selector requires an LLM client and token budget")
+        return score_seed_llm_schema(navigator, seed, args, llm_client, token_budget)
     started = time.time()
     error = ""
     returned_parts: list[str] = []
@@ -243,6 +282,97 @@ def score_seed(navigator: McMasterNavigator, seed: dict[str, Any], args: argpars
     }
 
 
+def score_seed_llm_schema(
+    navigator: McMasterNavigator,
+    seed: dict[str, Any],
+    args: argparse.Namespace,
+    llm_client: "OpenAIJsonClient",
+    token_budget: "TokenBudget",
+) -> dict[str, Any]:
+    started = time.time()
+    target = seed["part_number"]
+    error = ""
+    selected_part_number = None
+    matches: list[dict[str, Any]] = []
+    returned_parts: list[str] = []
+    pages: list[dict[str, Any]] = []
+    llm_payloads: dict[str, Any] = {}
+    filter_trace: list[dict[str, Any]] = []
+    status = "error"
+    usage_before = token_budget.used_tokens
+    try:
+        normalized = llm_extract_search_and_constraints(llm_client, seed["description"])
+        llm_payloads["normalized"] = normalized
+        search_queries = [
+            clean_text(query)
+            for query in normalized.get("search_queries", [])
+            if isinstance(query, str) and clean_text(query)
+        ][: args.llm_max_searches]
+        if not search_queries:
+            search_queries = derive_search_queries(seed["description"], limit=args.llm_max_searches)
+
+        rows: list[dict[str, Any]] = []
+        seen_page_urls: set[str] = set()
+        for query in search_queries:
+            page = navigator.search(query, max_depth=args.auto_drill_depth)
+            if page.url not in seen_page_urls:
+                pages.append(page.to_summary_dict())
+                seen_page_urls.add(page.url)
+            rows = merge_rows(rows, rows_from_page(page))
+            if len(rows) >= args.llm_max_rows:
+                rows = rows[: args.llm_max_rows]
+                break
+
+        field_summary = summarize_dynamic_fields(rows, max_values=args.llm_max_field_values)
+        mapped = llm_map_constraints_to_schema(
+            llm_client,
+            description=seed["description"],
+            normalized=normalized,
+            field_summary=field_summary,
+        )
+        llm_payloads["mapped"] = mapped
+        matches, filter_trace = apply_constraint_matchers(rows, mapped.get("matchers", []))
+        returned_parts = unique_part_numbers(matches)
+        if len(returned_parts) == 1:
+            status = "unique"
+            selected_part_number = returned_parts[0]
+        elif len(returned_parts) > 1:
+            status = "ambiguous"
+        else:
+            status = "unresolved"
+    except BudgetExceeded as exc:
+        error = f"BudgetExceeded: {exc}"
+        status = "budget_exceeded"
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        status = "error"
+
+    rank = returned_parts.index(target) + 1 if target in returned_parts else None
+    selected_is_target = selected_part_number == target
+    return {
+        **seed,
+        "selector": "llm-schema",
+        "found": selected_is_target,
+        "status": status,
+        "rank": rank,
+        "top1": selected_is_target,
+        "top5": bool(rank and rank <= 5),
+        "top10": bool(rank and rank <= 10),
+        "top20": bool(rank and rank <= 20),
+        "target_in_matches": target in returned_parts,
+        "selected_part_number": selected_part_number,
+        "returned_count": len(returned_parts),
+        "returned_part_numbers": returned_parts[: args.max_results],
+        "returned_products": matches[: args.max_results],
+        "pages_visited": pages,
+        "filter_trace": filter_trace,
+        "llm_payloads": llm_payloads,
+        "llm_tokens": token_budget.used_tokens - usage_before,
+        "error": error,
+        "seconds": round(time.time() - started, 3),
+    }
+
+
 def exact_description_from_product_page(
     navigator: McMasterNavigator,
     part_number: str,
@@ -269,6 +399,214 @@ def exact_description_from_product_page(
     return ". ".join(cleaned)[:500]
 
 
+def rows_from_page(page: PageSnapshot) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for product in page.products:
+        rows.append(
+            {
+                "part_number": product.part_number,
+                "family": product.family or page.title.replace(" | McMaster-Carr", ""),
+                "groups": list(product.groups),
+                "selected_option": product.selected_option,
+                "attributes": dict(product.attributes),
+                "evidence": product.context,
+                "source": "product_hit",
+                "url": product.url,
+                "page_url": page.url,
+                "page_title": page.title,
+            }
+        )
+    for schema in page.schemas:
+        for table in schema.get("tables", []):
+            for row in table.get("rows", []):
+                if not isinstance(row, dict):
+                    continue
+                part_number = clean_text(str(row.get("part_number", "")))
+                if not part_number:
+                    continue
+                attributes = row.get("attributes", {})
+                rows.append(
+                    {
+                        "part_number": part_number,
+                        "family": clean_text(str(row.get("family") or table.get("title") or schema.get("family_title") or page.title)),
+                        "groups": [clean_text(str(group)) for group in row.get("groups", []) if clean_text(str(group))],
+                        "selected_option": clean_text(str(row.get("selected_option") or "")),
+                        "attributes": attributes if isinstance(attributes, dict) else {},
+                        "evidence": clean_text(str(row.get("evidence") or "")),
+                        "source": "schema_row",
+                        "url": f"https://www.mcmaster.com/{part_number}",
+                        "page_url": page.url,
+                        "page_title": page.title,
+                    }
+                )
+    return merge_rows([], rows)
+
+
+def merge_rows(existing: list[dict[str, Any]], incoming: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[tuple[str, tuple[tuple[str, str], ...], tuple[str, ...]], dict[str, Any]] = {}
+    for row in [*existing, *incoming]:
+        part_number = clean_text(str(row.get("part_number", ""))).upper()
+        if not part_number:
+            continue
+        attributes = {
+            clean_text(str(key)): clean_text(str(value))
+            for key, value in dict(row.get("attributes", {})).items()
+            if clean_text(str(key)) and clean_text(str(value))
+        }
+        groups = [clean_text(str(group)) for group in row.get("groups", []) if clean_text(str(group))]
+        key = (
+            part_number,
+            tuple(sorted(attributes.items())),
+            tuple(groups),
+        )
+        current = merged.get(key)
+        clean_row = {
+            **row,
+            "part_number": part_number,
+            "attributes": attributes,
+            "groups": groups,
+        }
+        if current is None:
+            merged[key] = clean_row
+            continue
+        for field in ("family", "selected_option", "evidence", "url", "page_url", "page_title"):
+            value = clean_text(str(clean_row.get(field, "")))
+            if value and len(value) > len(clean_text(str(current.get(field, "")))):
+                current[field] = value
+    return list(merged.values())
+
+
+def summarize_dynamic_fields(rows: list[dict[str, Any]], *, max_values: int) -> dict[str, Any]:
+    fields: dict[str, dict[str, Any]] = {}
+
+    def add(field: str, value: str) -> None:
+        value = clean_text(value)
+        if not value:
+            return
+        slot = fields.setdefault(field, {"values": [], "count": 0})
+        slot["count"] += 1
+        if value not in slot["values"] and len(slot["values"]) < max_values:
+            slot["values"].append(value)
+
+    for row in rows:
+        add("family", str(row.get("family", "")))
+        for group in row.get("groups", []):
+            add("groups", str(group))
+        add("selected_option", str(row.get("selected_option", "")))
+        attributes = row.get("attributes", {})
+        if isinstance(attributes, dict):
+            for key, value in attributes.items():
+                add(f"attributes.{clean_text(str(key))}", str(value))
+    return {
+        "row_count": len(rows),
+        "fields": [
+            {"field": field, "count": data["count"], "sample_values": data["values"]}
+            for field, data in sorted(fields.items())
+        ],
+    }
+
+
+def apply_constraint_matchers(rows: list[dict[str, Any]], matchers: list[Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    current = list(rows)
+    trace: list[dict[str, Any]] = []
+    for raw_matcher in matchers:
+        if not isinstance(raw_matcher, dict):
+            continue
+        field = clean_text(str(raw_matcher.get("field", "")))
+        value = clean_text(str(raw_matcher.get("value", "")))
+        comparator = clean_text(str(raw_matcher.get("comparator") or "contains_all_terms"))
+        if not field or not value:
+            continue
+        before = len(unique_part_numbers(current))
+        filtered = [row for row in current if row_matches(row, field, value, comparator)]
+        after = len(unique_part_numbers(filtered))
+        trace.append(
+            {
+                "constraint": clean_text(str(raw_matcher.get("constraint") or value)),
+                "field": field,
+                "value": value,
+                "comparator": comparator,
+                "before_unique_parts": before,
+                "after_unique_parts": after,
+            }
+        )
+        current = filtered
+        if not current:
+            break
+    return current, trace
+
+
+def row_matches(row: dict[str, Any], field: str, value: str, comparator: str = "contains_all_terms") -> bool:
+    evidence = row_field_text(row, field)
+    if not evidence:
+        return False
+    evidence_norm = normalize(canonical_compare_text(evidence))
+    value_norm = normalize(canonical_compare_text(value))
+    if comparator == "equals_normalized":
+        return evidence_norm == value_norm
+    if comparator == "contains_phrase":
+        return value_norm in evidence_norm
+    tokens = constraint_tokens(value)
+    if comparator == "contains_any_term":
+        return bool(tokens) and any(term_matches(token, evidence_norm) for token in tokens)
+    return bool(tokens) and all(term_matches(token, evidence_norm) for token in tokens)
+
+
+def row_field_text(row: dict[str, Any], field: str) -> str:
+    if field == "family":
+        return str(row.get("family", ""))
+    if field == "groups":
+        return " ".join(str(group) for group in row.get("groups", []))
+    if field == "selected_option":
+        return str(row.get("selected_option", ""))
+    if field == "row_text":
+        return row_text(row)
+    if field.startswith("attributes."):
+        key = field.split(".", 1)[1]
+        attributes = row.get("attributes", {})
+        if isinstance(attributes, dict):
+            return str(attributes.get(key, ""))
+    return ""
+
+
+def row_text(row: dict[str, Any]) -> str:
+    pieces = [str(row.get("family", "")), *[str(group) for group in row.get("groups", [])], str(row.get("selected_option", ""))]
+    attributes = row.get("attributes", {})
+    if isinstance(attributes, dict):
+        pieces.extend(f"{key}: {value}" for key, value in attributes.items())
+    pieces.append(str(row.get("evidence", "")))
+    return " ".join(piece for piece in pieces if piece)
+
+
+def constraint_tokens(value: str) -> list[str]:
+    return [
+        token
+        for token in normalize(canonical_compare_text(value)).split()
+        if token and token not in {"and", "or", "the", "with", "for"}
+    ]
+
+
+def canonical_compare_text(value: str) -> str:
+    text = clean_text(value)
+    text = text.replace("°", " degree ")
+    text = re.sub(r"\bdeg\.?\b", " degree ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bin\.?\b", " inch ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bins\.?\b", " inch ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\binches\b", " inch ", text, flags=re.IGNORECASE)
+    return clean_text(text)
+
+
+def unique_part_numbers(rows: list[dict[str, Any]]) -> list[str]:
+    seen: set[str] = set()
+    parts: list[str] = []
+    for row in rows:
+        part = clean_text(str(row.get("part_number", ""))).upper()
+        if part and part not in seen:
+            seen.add(part)
+            parts.append(part)
+    return parts
+
+
 def product_preview_sentence(text_preview: str, part_number: str) -> str:
     text = sanitize_description_piece(text_preview.replace(" | McMaster-Carr", " "), part_number)
     if not text:
@@ -283,6 +621,221 @@ def product_preview_sentence(text_preview: str, part_number: str) -> str:
         if len(kept) >= 2:
             break
     return ". ".join(kept)
+
+
+class BudgetExceeded(RuntimeError):
+    pass
+
+
+class TokenBudget:
+    def __init__(self, limit: int):
+        self.limit = limit
+        self.used_tokens = 0
+        self.estimated_tokens = 0
+        self.calls = 0
+
+    def reserve(self, estimated_tokens: int) -> None:
+        if self.used_tokens + estimated_tokens > self.limit:
+            raise BudgetExceeded(
+                f"next estimated call would exceed token budget "
+                f"({self.used_tokens}+{estimated_tokens}>{self.limit})"
+            )
+        self.estimated_tokens += estimated_tokens
+
+    def record(self, tokens: int) -> None:
+        self.used_tokens += max(tokens, 0)
+        self.calls += 1
+        if self.used_tokens > self.limit:
+            raise BudgetExceeded(f"token usage exceeded budget ({self.used_tokens}>{self.limit})")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "limit": self.limit,
+            "used_tokens": self.used_tokens,
+            "estimated_reserved_tokens": self.estimated_tokens,
+            "calls": self.calls,
+            "remaining_tokens": max(self.limit - self.used_tokens, 0),
+        }
+
+
+class OpenAIJsonClient:
+    def __init__(self, *, api_key: str, model: str, budget: TokenBudget):
+        self.api_key = api_key
+        self.model = model
+        self.budget = budget
+
+    def complete_json(self, system: str, user: str, *, max_completion_tokens: int = 900) -> dict[str, Any]:
+        estimated = estimate_tokens(system) + estimate_tokens(user) + max_completion_tokens
+        self.budget.reserve(estimated)
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "response_format": {"type": "json_object"},
+            "max_completion_tokens": max_completion_tokens,
+        }
+        request = urllib.request.Request(
+            "https://api.openai.com/v1/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=90) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            if "max_completion_tokens" in body and exc.code == 400:
+                payload.pop("max_completion_tokens", None)
+                data = self._retry_without_completion_cap(payload)
+            else:
+                raise RuntimeError(f"OpenAI API error {exc.code}: {body[:800]}") from exc
+        usage = data.get("usage") or {}
+        total_tokens = usage.get("total_tokens")
+        if not isinstance(total_tokens, int):
+            total_tokens = estimated
+        self.budget.record(total_tokens)
+        content = data["choices"][0]["message"]["content"]
+        return json.loads(content)
+
+    def _retry_without_completion_cap(self, payload: dict[str, Any]) -> dict[str, Any]:
+        request = urllib.request.Request(
+            "https://api.openai.com/v1/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=90) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+
+def estimate_tokens(text: str) -> int:
+    return max(1, len(text) // 3)
+
+
+def llm_extract_search_and_constraints(client: OpenAIJsonClient, description: str) -> dict[str, Any]:
+    system = (
+        "You convert a mechanical catalog part description into search queries and explicit constraints. "
+        "Do not use supplier part numbers. Do not assume a fixed ontology. Return only JSON."
+    )
+    user = json.dumps(
+        {
+            "task": "Extract broad McMaster-Carr search queries and exact constraints from the description.",
+            "description": description,
+            "output_schema": {
+                "search_queries": ["short broad product-family query, no dimensions unless essential"],
+                "constraints": [
+                    {
+                        "constraint": "literal requested requirement",
+                        "value": "value to match on a catalog row",
+                        "required": True,
+                    }
+                ],
+            },
+            "rules": [
+                "Prefer product-family search queries such as socket head screw, compression spring, drawer slide.",
+                "Constraints should contain only requirements present in the description.",
+                "Keep constraints literal and short: material, size, length, rating, package quantity, model number, compatibility, finish.",
+            ],
+        },
+        ensure_ascii=True,
+    )
+    result = client.complete_json(system, user, max_completion_tokens=900)
+    if not isinstance(result, dict):
+        raise RuntimeError("LLM normalizer returned non-object JSON")
+    return result
+
+
+def llm_map_constraints_to_schema(
+    client: OpenAIJsonClient,
+    *,
+    description: str,
+    normalized: dict[str, Any],
+    field_summary: dict[str, Any],
+) -> dict[str, Any]:
+    allowed_fields = [field["field"] for field in field_summary.get("fields", []) if isinstance(field, dict)]
+    system = (
+        "You map requested part constraints to fields dynamically extracted from a supplier catalog page. "
+        "You are not selecting a part number. Python will filter rows exactly after your mapping. "
+        "Do not invent fields. Return only JSON."
+    )
+    user = json.dumps(
+        {
+            "task": "Map each required constraint to one available field so deterministic code can filter rows.",
+            "description": description,
+            "normalized_constraints": normalized.get("constraints", []),
+            "available_fields": allowed_fields,
+            "field_summary": field_summary,
+            "output_schema": {
+                "matchers": [
+                    {
+                        "constraint": "requested requirement",
+                        "field": "one of available_fields or row_text",
+                        "value": "literal value that must be found in that field",
+                        "comparator": "contains_all_terms",
+                    }
+                ],
+                "unmapped_constraints": ["constraint text if no available field can test it"],
+            },
+            "rules": [
+                "Use groups for values that appear as table group headings.",
+                "Use attributes.<column name> for values that appear under a specific dynamic table column.",
+                "Use family only for the broad product family.",
+                "Use row_text only if no specific field can represent the constraint.",
+                "Do not output a matcher for a constraint unless the field summary shows the field exists.",
+                "Allowed comparators are contains_all_terms, contains_phrase, equals_normalized, contains_any_term.",
+                "Use contains_all_terms by default. Use equals_normalized only for short exact categorical values.",
+                "Every matcher is a hard filter; overly broad or invented matchers will cause wrong results.",
+            ],
+        },
+        ensure_ascii=True,
+    )
+    result = client.complete_json(system, user, max_completion_tokens=1000)
+    if not isinstance(result, dict):
+        raise RuntimeError("LLM mapper returned non-object JSON")
+    sanitized = []
+    allowed = set(allowed_fields) | {"row_text"}
+    for matcher in result.get("matchers", []):
+        if not isinstance(matcher, dict):
+            continue
+        field = clean_text(str(matcher.get("field", "")))
+        value = clean_text(str(matcher.get("value", "")))
+        comparator = clean_text(str(matcher.get("comparator") or "contains_all_terms"))
+        if comparator not in {"contains_all_terms", "contains_phrase", "equals_normalized", "contains_any_term"}:
+            comparator = "contains_all_terms"
+        if field in allowed and value:
+            sanitized.append(
+                {
+                    "constraint": clean_text(str(matcher.get("constraint") or value)),
+                    "field": field,
+                    "value": value,
+                    "comparator": comparator,
+                }
+            )
+    result["matchers"] = sanitized
+    return result
+
+
+def load_env_file(path: Path) -> None:
+    if not path.exists():
+        raise FileNotFoundError(path)
+    for line in path.read_text(errors="ignore").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 
 def sample_products(products: list[Any], limit: int) -> list[Any]:
@@ -441,6 +994,7 @@ def summarize(
     found = [record for record in scored if record.get("found")]
     ranks = [record["rank"] for record in found if record.get("rank")]
     by_category: dict[str, Counter] = defaultdict(Counter)
+    by_status: Counter = Counter()
     for record in scored:
         category = record["category"]
         by_category[category]["total"] += 1
@@ -448,6 +1002,8 @@ def summarize(
             by_category[category]["found"] += 1
         if record.get("top10"):
             by_category[category]["top10"] += 1
+        if record.get("status"):
+            by_status[record["status"]] += 1
     return {
         "run_dir": str(run_dir),
         "target": args.target,
@@ -463,13 +1019,19 @@ def summarize(
         "mean_seconds": round(statistics.mean([record["seconds"] for record in scored]), 3) if scored else None,
         "total_seconds": round(total_seconds, 3),
         "parameters": {
+            "selector": args.selector,
             "per_query": args.per_query,
             "max_results": args.max_results,
             "max_pages": args.max_pages,
             "auto_drill_depth": args.auto_drill_depth,
             "seed_depth": args.seed_depth,
             "reuse_browser": args.reuse_browser,
+            "llm_model": args.llm_model or os.getenv("OPENAI_MODEL") or os.getenv("FUSION_LLM_MODEL") or None,
+            "llm_token_budget": args.llm_token_budget if args.selector == "llm-schema" else None,
+            "llm_max_searches": args.llm_max_searches if args.selector == "llm-schema" else None,
+            "llm_max_rows": args.llm_max_rows if args.selector == "llm-schema" else None,
         },
+        "by_status": dict(by_status),
         "by_category": {category: dict(counter) for category, counter in sorted(by_category.items())},
         "misses": [
             {
@@ -479,6 +1041,8 @@ def summarize(
                 "description": record["description"],
                 "returned_count": record["returned_count"],
                 "first_returned": record["returned_part_numbers"][:5],
+                "status": record.get("status"),
+                "target_in_matches": record.get("target_in_matches"),
                 "error": record.get("error", ""),
             }
             for record in scored
@@ -493,7 +1057,10 @@ def write_csv(path: Path, results: list[dict[str, Any]]) -> None:
         "category",
         "seed_query",
         "description",
+        "selector",
+        "status",
         "found",
+        "target_in_matches",
         "rank",
         "top1",
         "top5",
@@ -501,6 +1068,7 @@ def write_csv(path: Path, results: list[dict[str, Any]]) -> None:
         "top20",
         "returned_count",
         "selected_part_number",
+        "llm_tokens",
         "seconds",
         "seed_page_url",
         "error",
