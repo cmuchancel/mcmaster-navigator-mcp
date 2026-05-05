@@ -1079,7 +1079,13 @@ def normalize_matcher_output(result: dict[str, Any], clean_matchers: list[dict[s
         if not isinstance(matcher, dict):
             continue
         field = clean_text(str(matcher.get("field", "")))
-        accepted = [clean_text(str(value)) for value in matcher.get("accepted_values", []) if clean_text(str(value)) in allowed_by_field.get(field, set())]
+        requested_value = clean_text(str(matcher.get("value", "")))
+        accepted = [
+            clean_text(str(value))
+            for value in matcher.get("accepted_values", [])
+            if clean_text(str(value)) in allowed_by_field.get(field, set())
+            and accepted_catalog_value_is_compatible(field, requested_value, clean_text(str(value)))
+        ]
         key = (clean_text(str(matcher.get("constraint", ""))), field, clean_text(str(matcher.get("value", ""))))
         base = by_key.get(key, matcher)
         normalized_matchers.append({**base, "accepted_values": accepted})
@@ -1103,7 +1109,13 @@ def repair_matcher_output(result: dict[str, Any], field_values: dict[str, list[s
         if not isinstance(matcher, dict):
             continue
         field = clean_text(str(matcher.get("field", "")))
-        accepted = [clean_text(str(value)) for value in matcher.get("accepted_values", []) if clean_text(str(value)) in allowed_by_field.get(field, set())]
+        requested_value = clean_text(str(matcher.get("value") or matcher.get("constraint") or ""))
+        accepted = [
+            clean_text(str(value))
+            for value in matcher.get("accepted_values", [])
+            if clean_text(str(value)) in allowed_by_field.get(field, set())
+            and accepted_catalog_value_is_compatible(field, requested_value, clean_text(str(value)))
+        ]
         if not accepted:
             continue
         comparator = clean_text(str(matcher.get("comparator") or "equals_normalized"))
@@ -1430,6 +1442,29 @@ def normalize_label(value: str) -> str:
 
 def same_catalog_value(left: str, right: str) -> bool:
     return normalize(canonical_compare_text(left)) == normalize(canonical_compare_text(right))
+
+
+def accepted_catalog_value_is_compatible(field: str, requested: str, accepted: str) -> bool:
+    if clean_text(field) != "selected_option":
+        return True
+    requested_tokens = significant_catalog_tokens(requested)
+    if not requested_tokens:
+        return True
+    accepted_norm = normalize(canonical_compare_text(accepted))
+    if not accepted_norm:
+        return False
+    return all(term_matches(token, accepted_norm) for token in requested_tokens)
+
+
+def significant_catalog_tokens(value: str) -> list[str]:
+    stopwords = {"a", "an", "and", "by", "for", "in", "of", "on", "or", "the", "to", "with"}
+    tokens: list[str] = []
+    for token in constraint_tokens(value):
+        if token in stopwords:
+            continue
+        if token not in tokens:
+            tokens.append(token)
+    return tokens
 
 
 def should_repair_matchers(matchers: list[Any], trace: list[dict[str, Any]], matches: list[dict[str, Any]]) -> bool:

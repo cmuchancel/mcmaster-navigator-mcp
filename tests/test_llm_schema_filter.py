@@ -511,6 +511,16 @@ def test_explicit_selected_option_label_adds_missing_matcher():
         assert module.unique_part_numbers(matches) == ["A2"]
 
 
+def test_selected_option_value_must_preserve_requested_option_terms():
+    for module in FILTER_MODULES:
+        assert module.accepted_catalog_value_is_compatible("selected_option", "case for calipers", "Calipers") is False
+        assert module.accepted_catalog_value_is_compatible(
+            "selected_option",
+            "calipers with calibration certificate",
+            "Calipers with Calibration Certificate",
+        ) is True
+
+
 def test_selected_option_is_applied_before_attribute_matchers():
     matchers = [
         {"constraint": "Size", "field": "attributes.Size", "value": "1", "accepted_values": ["1"]},

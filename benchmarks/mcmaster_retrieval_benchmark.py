@@ -1373,10 +1373,12 @@ def llm_normalize_matcher_values(
         if not isinstance(matcher, dict):
             continue
         field = clean_text(str(matcher.get("field", "")))
+        requested_value = clean_text(str(matcher.get("value", "")))
         accepted = [
             clean_text(str(value))
             for value in matcher.get("accepted_values", [])
             if clean_text(str(value)) in allowed_by_field.get(field, set())
+            and accepted_catalog_value_is_compatible(field, requested_value, clean_text(str(value)))
         ]
         key = (
             clean_text(str(matcher.get("constraint", ""))),
@@ -1482,10 +1484,12 @@ def llm_repair_matchers_from_live_schema(
         field = clean_text(str(matcher.get("field", "")))
         if field not in allowed_fields:
             continue
+        requested_value = clean_text(str(matcher.get("value") or matcher.get("constraint") or ""))
         accepted = [
             clean_text(str(value))
             for value in matcher.get("accepted_values", [])
             if clean_text(str(value)) in allowed_by_field.get(field, set())
+            and accepted_catalog_value_is_compatible(field, requested_value, clean_text(str(value)))
         ]
         if not accepted:
             continue
@@ -1821,6 +1825,29 @@ def normalize_label(value: str) -> str:
 
 def same_catalog_value(left: str, right: str) -> bool:
     return normalize(canonical_compare_text(left)) == normalize(canonical_compare_text(right))
+
+
+def accepted_catalog_value_is_compatible(field: str, requested: str, accepted: str) -> bool:
+    if clean_text(field) != "selected_option":
+        return True
+    requested_tokens = significant_catalog_tokens(requested)
+    if not requested_tokens:
+        return True
+    accepted_norm = normalize(canonical_compare_text(accepted))
+    if not accepted_norm:
+        return False
+    return all(term_matches(token, accepted_norm) for token in requested_tokens)
+
+
+def significant_catalog_tokens(value: str) -> list[str]:
+    stopwords = {"a", "an", "and", "by", "for", "in", "of", "on", "or", "the", "to", "with"}
+    tokens: list[str] = []
+    for token in constraint_tokens(value):
+        if token in stopwords:
+            continue
+        if token not in tokens:
+            tokens.append(token)
+    return tokens
 
 
 def load_env_file(path: Path) -> None:
