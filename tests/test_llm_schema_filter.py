@@ -395,6 +395,53 @@ def test_late_attribute_conflict_does_not_erase_unique_match():
         assert module.should_repair_matchers(matchers, trace, matches) is False
 
 
+def test_grounded_late_constraints_can_outvote_premature_unique_match():
+    rows = [
+        {
+            "part_number": "2325A47",
+            "family": "Digital Calipers",
+            "groups": ["Mitutoyo"],
+            "selected_option": "",
+            "attributes": {"For Caliper Measurement Range": '0" to 12" , 0 mm to 300 mm'},
+        },
+        {
+            "part_number": "2231N13",
+            "family": "Digital Calipers",
+            "groups": ["Starrett"],
+            "selected_option": "",
+            "attributes": {
+                "For Mfr. Model No.": "120-12 , 120Z-12 , 798A-12/300 , 798B-12/300 , EC799A-12/300",
+                "Material": "Wood",
+            },
+        },
+    ]
+    matchers = [
+        {"constraint": "product type", "field": "selected_option", "value": "Case", "accepted_values": []},
+        {"constraint": "family", "field": "family", "value": "Digital Calipers", "accepted_values": ["Digital Calipers"]},
+        {"constraint": "group", "field": "groups", "value": "Starrett", "accepted_values": ["Starrett"]},
+        {
+            "constraint": "measuring range",
+            "field": "attributes.For Caliper Measurement Range",
+            "value": '0" to 12" and 0 mm to 300 mm',
+            "accepted_values": ['0" to 12" , 0 mm to 300 mm'],
+        },
+        {
+            "constraint": "compatible with mfr. model no.",
+            "field": "attributes.For Mfr. Model No.",
+            "value": "120-12, 120Z-12, 798A-12/300, 798B-12/300, EC799A-12/300",
+            "accepted_values": ["120-12 , 120Z-12 , 798A-12/300 , 798B-12/300 , EC799A-12/300"],
+        },
+        {"constraint": "material", "field": "attributes.Material", "value": "Wood", "accepted_values": ["Wood"]},
+    ]
+
+    for module in FILTER_MODULES:
+        matches, trace = module.apply_constraint_matchers(rows, matchers)
+
+        assert module.unique_part_numbers(matches) == ["2231N13"]
+        assert trace[-1]["field"] == "metadata.constraint_votes"
+        assert trace[-1]["selected_part_numbers"] == ["2231N13"]
+
+
 def test_family_link_priority_prefers_exact_family_category_over_modified_sibling():
     exact = SimpleNamespace(
         text="",

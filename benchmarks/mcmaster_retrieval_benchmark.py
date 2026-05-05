@@ -623,12 +623,14 @@ def summarize_dynamic_fields(rows: list[dict[str, Any]], *, max_values: int) -> 
 
 
 def apply_constraint_matchers(rows: list[dict[str, Any]], matchers: list[Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    all_rows = list(rows)
     current = list(rows)
     trace: list[dict[str, Any]] = []
-    for raw_matcher in sorted(
+    ordered_matchers = sorted(
         [matcher for matcher in matchers if isinstance(matcher, dict)],
         key=matcher_application_priority,
-    ):
+    )
+    for raw_matcher in ordered_matchers:
         if not isinstance(raw_matcher, dict):
             continue
         field = clean_text(str(raw_matcher.get("field", "")))
@@ -700,7 +702,119 @@ def apply_constraint_matchers(rows: list[dict[str, Any]], matchers: list[Any]) -
         current = filtered
         if not current:
             break
+    current, reconciliation_trace = reconcile_conflicting_matchers(all_rows, current, ordered_matchers, trace)
+    if reconciliation_trace:
+        trace.append(reconciliation_trace)
     return current, trace
+
+
+def reconcile_conflicting_matchers(
+    rows: list[dict[str, Any]],
+    current: list[dict[str, Any]],
+    matchers: list[dict[str, Any]],
+    trace: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    if not rows or not current or not has_grounded_conflict(trace):
+        return current, None
+    row_scores = score_rows_by_matchers(rows, matchers)
+    if not row_scores:
+        return current, None
+    current_parts = set(unique_part_numbers(current))
+    current_best = max((score for row, score in row_scores if clean_text(str(row.get("part_number", ""))).upper() in current_parts), default=0)
+    best_score = max(score for _row, score in row_scores)
+    if best_score <= current_best:
+        return current, None
+    best_parts = unique_scored_parts(row_scores, best_score)
+    current_unique_count = len(current_parts)
+    if len(best_parts) != 1 and (current_unique_count == 1 or len(best_parts) > current_unique_count):
+        return current, None
+    best_set = set(best_parts)
+    reconciled = [row for row in rows if clean_text(str(row.get("part_number", ""))).upper() in best_set]
+    if not reconciled:
+        return current, None
+    return reconciled, {
+        "constraint": "constraint vote reconciliation",
+        "field": "metadata.constraint_votes",
+        "value": "",
+        "comparator": "strictly_higher_match_count",
+        "accepted_values": [],
+        "before_unique_parts": current_unique_count,
+        "after_unique_parts": len(best_parts),
+        "current_best_score": current_best,
+        "best_score": best_score,
+        "selected_part_numbers": best_parts[:20],
+    }
+
+
+def has_grounded_conflict(trace: list[dict[str, Any]]) -> bool:
+    for step in trace:
+        if not step.get("skipped"):
+            continue
+        if not str(step.get("skip_reason", "")).startswith("constraint conflicts"):
+            continue
+        if step.get("accepted_values"):
+            return True
+    return False
+
+
+def score_rows_by_matchers(rows: list[dict[str, Any]], matchers: list[dict[str, Any]]) -> list[tuple[dict[str, Any], int]]:
+    usable: list[tuple[dict[str, Any], set[str]]] = []
+    all_parts = set(unique_part_numbers(rows))
+    for matcher in matchers:
+        prepared = prepare_matcher(matcher)
+        if prepared is None:
+            continue
+        field, value, comparator, accepted_values, accepted_values_provided = prepared
+        matched_parts = {
+            clean_text(str(row.get("part_number", ""))).upper()
+            for row in rows
+            if row_matches(
+                row,
+                field,
+                value,
+                comparator,
+                accepted_values=accepted_values,
+                accepted_values_provided=accepted_values_provided,
+            )
+        }
+        matched_parts.discard("")
+        if not matched_parts or matched_parts == all_parts:
+            continue
+        usable.append((matcher, matched_parts))
+    if not usable:
+        return []
+    scored: list[tuple[dict[str, Any], int]] = []
+    for row in rows:
+        part = clean_text(str(row.get("part_number", ""))).upper()
+        if not part:
+            continue
+        score = sum(1 for _matcher, matched_parts in usable if part in matched_parts)
+        scored.append((row, score))
+    return scored
+
+
+def prepare_matcher(matcher: dict[str, Any]) -> tuple[str, str, str, list[str], bool] | None:
+    field = clean_text(str(matcher.get("field", "")))
+    value = clean_text(str(matcher.get("value", "")))
+    comparator = clean_text(str(matcher.get("comparator") or "contains_all_terms"))
+    accepted_values_provided = "accepted_values" in matcher
+    accepted_values = [clean_text(str(item)) for item in matcher.get("accepted_values", []) if clean_text(str(item))]
+    if not field or not value:
+        return None
+    if accepted_values_provided and not accepted_values:
+        return None
+    return field, value, comparator, accepted_values, accepted_values_provided
+
+
+def unique_scored_parts(row_scores: list[tuple[dict[str, Any], int]], score: int) -> list[str]:
+    seen: set[str] = set()
+    parts: list[str] = []
+    for row, row_score in row_scores:
+        part = clean_text(str(row.get("part_number", ""))).upper()
+        if row_score == score and part and part not in seen:
+            seen.add(part)
+            parts.append(part)
+    return parts
 
 
 def zero_matcher_can_be_skipped(field: str, before: int, trace: list[dict[str, Any]]) -> bool:
