@@ -14,6 +14,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -331,7 +332,7 @@ def score_seed_llm_schema(
         for query, page in search_pages:
             if len(rows) >= args.llm_max_rows:
                 break
-            for link in _rank_links_for_query(page, f"{query} {seed['description']}"):
+            for link in rank_schema_links(page, description=seed["description"], query=query):
                 if len(pages) >= args.max_pages or len(rows) >= args.llm_max_rows:
                     break
                 if link.url in seen_page_urls:
@@ -430,6 +431,52 @@ def score_seed_llm_schema(
         "error": error,
         "seconds": round(time.time() - started, 3),
     }
+
+
+def rank_schema_links(page: PageSnapshot, *, description: str, query: str) -> list[Any]:
+    ranked = _rank_links_for_query(page, f"{query} {description}")
+    labels = explicit_description_labels(description)
+    family_values = labels.get("family", [])
+    if not family_values:
+        return ranked
+    return [
+        link
+        for _priority, _index, link in sorted(
+            (
+                (family_link_priority(link, family_values), index, link)
+                for index, link in enumerate(ranked)
+            ),
+            key=lambda item: (item[0], item[1]),
+        )
+    ]
+
+
+def family_link_priority(link: Any, family_values: list[str]) -> int:
+    if not family_values:
+        return 1000
+    text_norm = normalize(canonical_compare_text(clean_text(str(getattr(link, "text", "")))))
+    path = unquote(urlparse(str(getattr(link, "url", ""))).path)
+    segments = [segment for segment in path.split("/") if segment]
+    segments = [segment for segment in segments if "~~" in segment] or segments
+    segment_norms = [
+        normalize(canonical_compare_text(segment.replace("-", " ").replace("~", " ")))
+        for segment in segments
+    ]
+    best = 1000
+    for family in family_values:
+        family_norm = normalize(canonical_compare_text(family))
+        if not family_norm:
+            continue
+        family_tokens = set(family_norm.split())
+        if text_norm == family_norm:
+            best = min(best, 0)
+        for segment_norm in segment_norms:
+            segment_tokens = set(segment_norm.split())
+            if segment_norm == family_norm:
+                best = min(best, 0)
+            elif family_tokens and family_tokens.issubset(segment_tokens):
+                best = min(best, max(len(segment_tokens - family_tokens), 1))
+    return best
 
 
 def exact_description_from_product_page(

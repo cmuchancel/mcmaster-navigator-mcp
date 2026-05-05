@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from types import SimpleNamespace
 from pathlib import Path
 
 from mcmaster_navigator_mcp import schema_resolver
@@ -392,3 +393,18 @@ def test_late_attribute_conflict_does_not_erase_unique_match():
         assert module.unique_part_numbers(matches) == ["A1"]
         assert trace[-1]["skipped"] is True
         assert module.should_repair_matchers(matchers, trace, matches) is False
+
+
+def test_family_link_priority_prefers_exact_family_category_over_modified_sibling():
+    exact = SimpleNamespace(
+        text="",
+        url="https://www.mcmaster.com/Stainless+Steel+Socket+Head+Screws/stainless-steel-socket-head-screws~~/",
+    )
+    sibling = SimpleNamespace(
+        text="",
+        url="https://www.mcmaster.com/Stainless+Steel+Socket+Head+Screws/left-hand-thread-stainless-steel-socket-head-screws~~/",
+    )
+    family_values = ["Stainless Steel Socket Head Screws"]
+
+    for module in FILTER_MODULES:
+        assert module.family_link_priority(exact, family_values) < module.family_link_priority(sibling, family_values)
