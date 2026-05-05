@@ -521,6 +521,23 @@ def test_selected_option_value_must_preserve_requested_option_terms():
         ) is True
 
 
+def test_accepted_catalog_value_guard_rejects_semantic_mismatch_and_page_artifacts():
+    artifact = (
+        'Steel Eyebolt without Shoulder - for Lifting, 3/4"-10 Thread Size, '
+        '1-5/8" Thread Length Product Detail Quantity Each Delivers tomorrow 7-9 am ADD TO ORDER'
+    )
+
+    for module in FILTER_MODULES:
+        assert module.significant_catalog_tokens("Zinc-Plated") == ["zinc", "plated"]
+        assert "lb" not in module.significant_catalog_tokens("1,400 lb")
+        assert module.accepted_catalog_value_is_compatible("attributes.Appearance", "Zinc-Plated", "Dull") is False
+        assert module.accepted_catalog_value_is_compatible("groups", "Zinc-Plated", "Zinc-Plated Steel") is True
+        assert module.accepted_catalog_value_is_compatible("attributes.Vert. Cap., lb.", "1,400 lb", "1,400") is True
+        assert module.accepted_catalog_value_is_compatible("attributes.No. of Flanges", "without flanges", "—") is True
+        assert module.accepted_catalog_value_is_compatible("attributes.No. of Flanges", "2 flanges", "—") is False
+        assert module.accepted_catalog_value_is_compatible("attributes.Thread Size", '3/4"-10', artifact) is False
+
+
 def test_selected_option_is_applied_before_attribute_matchers():
     matchers = [
         {"constraint": "Size", "field": "attributes.Size", "value": "1", "accepted_values": ["1"]},

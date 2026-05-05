@@ -242,6 +242,69 @@ def test_snapshot_exposes_dynamic_table_schema_and_row_attributes():
     assert row["groups"] == ["18-8 Stainless Steel", "M14 x 2 mm"]
 
 
+def test_schema_rows_include_section_header_groups_before_table_groups():
+    html = """
+    <html>
+      <head><title>Eyebolts | McMaster-Carr</title></head>
+      <body>
+        <h2>Eyebolts—For Lifting</h2>
+        <div class="_remainingOrg2PresentationHeader_11uzw_15">
+          <span class="_subtableHeader_11uzw_69">Zinc-Plated Steel</span>
+        </div>
+        <table>
+          <thead>
+            <tr><th>Thread Size</th><th>Thread Lg.</th><th>Without Shoulder</th></tr>
+          </thead>
+          <tr class="_stackPivotRow_q8hpp_63"><td colspan="3">Closed Eye</td></tr>
+          <tr>
+            <td>3/8 "-16</td>
+            <td>2 1/2 "</td>
+            <td class="_partNumberCell_krvpj_1"><a href="/3013T101">3013T101</a></td>
+          </tr>
+        </table>
+      </body>
+    </html>
+    """
+
+    snapshot = snapshot_from_html(html, "https://www.mcmaster.com/eyebolts/")
+    by_part = {product.part_number: product for product in snapshot.products}
+    row = snapshot.schemas[0]["tables"][0]["rows"][0]
+
+    assert by_part["3013T101"].groups == ["Zinc-Plated Steel", "Closed Eye"]
+    assert row["groups"] == ["Zinc-Plated Steel", "Closed Eye"]
+    assert "Group: Zinc-Plated Steel" in by_part["3013T101"].context
+
+
+def test_schema_rows_keep_null_spec_cells_as_dynamic_attribute_values():
+    html = """
+    <html>
+      <head><title>Timing Belt Pulleys | McMaster-Carr</title></head>
+      <body>
+        <h2>Timing Belt Pulleys</h2>
+        <table>
+          <thead>
+            <tr><th>No. of Teeth</th><th>No. of Flanges</th><th></th><th>Each</th></tr>
+          </thead>
+          <tr>
+            <td>60</td>
+            <td class="_nullCell_19tvz_1">—</td>
+            <td class="_partNumberCell_krvpj_1"><a href="/1375K158">1375K158</a></td>
+            <td class="_priceCell_14fib_77">$17.82</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+    """
+
+    snapshot = snapshot_from_html(html, "https://www.mcmaster.com/timing-belt-pulleys/")
+    by_part = {product.part_number: product for product in snapshot.products}
+    row = snapshot.schemas[0]["tables"][0]["rows"][0]
+
+    assert by_part["1375K158"].attributes["No. of Flanges"] == "—"
+    assert row["attributes"]["No. of Flanges"] == "—"
+    assert "Each" not in row["attributes"]
+
+
 def test_schema_extracts_linked_option_variants_as_dynamic_attributes():
     html = """
     <html>

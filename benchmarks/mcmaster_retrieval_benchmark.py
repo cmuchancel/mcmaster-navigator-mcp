@@ -1827,27 +1827,153 @@ def same_catalog_value(left: str, right: str) -> bool:
     return normalize(canonical_compare_text(left)) == normalize(canonical_compare_text(right))
 
 
+CATALOG_VALUE_ARTIFACT_MARKERS = (
+    "product detail",
+    "add to order",
+    "delivers tomorrow",
+    "delivers today",
+    "select a compatible",
+    "download select",
+    "web price",
+    "price each",
+    "quantity each",
+)
+
+CATALOG_SEMANTIC_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "by",
+    "for",
+    "in",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "with",
+    "x",
+    "amp",
+    "amps",
+    "cm",
+    "degree",
+    "degrees",
+    "feet",
+    "foot",
+    "ft",
+    "g",
+    "hp",
+    "inch",
+    "inches",
+    "kg",
+    "lb",
+    "lbs",
+    "m",
+    "mm",
+    "oz",
+    "psi",
+    "rpm",
+    "v",
+    "volt",
+    "volts",
+    "w",
+    "watt",
+    "watts",
+    "capacity",
+    "diameter",
+    "height",
+    "id",
+    "inside",
+    "length",
+    "long",
+    "max",
+    "maximum",
+    "min",
+    "minimum",
+    "model",
+    "no",
+    "number",
+    "od",
+    "outside",
+    "overall",
+    "package",
+    "pack",
+    "part",
+    "pkg",
+    "qty",
+    "quantity",
+    "range",
+    "rating",
+    "size",
+    "thread",
+    "type",
+    "width",
+}
+
+NULLISH_CATALOG_VALUES = {"-", "—", "–", "none", "no", "n/a", "na", "not applicable"}
+NULLISH_REQUEST_TOKENS = {"no", "none", "without", "less"}
+
+
 def accepted_catalog_value_is_compatible(field: str, requested: str, accepted: str) -> bool:
-    if clean_text(field) != "selected_option":
+    field = clean_text(field)
+    requested = clean_text(requested)
+    accepted = clean_text(accepted)
+    if not accepted:
+        return False
+    if catalog_value_looks_like_ui_artifact(accepted):
+        return False
+    if catalog_value_is_nullish(accepted):
+        return requested_catalog_value_allows_nullish(requested)
+    if field == "family":
         return True
     requested_tokens = significant_catalog_tokens(requested)
     if not requested_tokens:
         return True
-    accepted_norm = normalize(canonical_compare_text(accepted))
+    accepted_norm = normalize(catalog_semantic_text(accepted))
     if not accepted_norm:
         return False
     return all(term_matches(token, accepted_norm) for token in requested_tokens)
 
 
+def catalog_value_looks_like_ui_artifact(value: str) -> bool:
+    normalized = normalize(canonical_compare_text(value))
+    if any(marker in normalized for marker in CATALOG_VALUE_ARTIFACT_MARKERS):
+        return True
+    if len(value) > 240 and PART_RE.search(value):
+        return True
+    return False
+
+
+def catalog_value_is_nullish(value: str) -> bool:
+    return normalize(canonical_compare_text(value)) in NULLISH_CATALOG_VALUES or clean_text(value).lower() in NULLISH_CATALOG_VALUES
+
+
+def requested_catalog_value_allows_nullish(value: str) -> bool:
+    normalized = normalize(canonical_compare_text(value))
+    if not normalized:
+        return True
+    tokens = set(normalized.split())
+    return bool(tokens.intersection(NULLISH_REQUEST_TOKENS))
+
+
 def significant_catalog_tokens(value: str) -> list[str]:
-    stopwords = {"a", "an", "and", "by", "for", "in", "of", "on", "or", "the", "to", "with"}
     tokens: list[str] = []
-    for token in constraint_tokens(value):
-        if token in stopwords:
+    for token in constraint_tokens(catalog_semantic_text(value)):
+        if not re.search(r"[a-z]", token):
+            continue
+        if re.search(r"\d", token):
+            continue
+        if token in CATALOG_SEMANTIC_STOPWORDS:
             continue
         if token not in tokens:
             tokens.append(token)
     return tokens
+
+
+def catalog_semantic_text(value: str) -> str:
+    text = canonical_compare_text(value)
+    text = re.sub(r"(?<=[A-Za-z])[-/](?=[A-Za-z])", " ", text)
+    return clean_text(text)
 
 
 def load_env_file(path: Path) -> None:

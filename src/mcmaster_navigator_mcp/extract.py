@@ -602,7 +602,10 @@ def _table_row_data_from_row(row, part_number: str, *, element=None) -> dict[str
         family = _nearby_heading(row)
         if family:
             pairs.append(f"Family: {family}")
-        groups = _table_group_context(row)
+        groups = _merge_group_contexts(
+            _section_group_context(row),
+            _table_group_context(row),
+        )
         for group in groups:
             pairs.append(f"Group: {group}")
         if selected_header:
@@ -677,6 +680,53 @@ def _table_group_context(row) -> list[str]:
     ]
 
 
+def _section_group_context(row) -> list[str]:
+    table = row.find_parent("table")
+    if table is None:
+        return []
+
+    groups: list[str] = []
+    for element in table.find_all_previous(True, limit=200):
+        if element.find_parent("table") is table:
+            continue
+        text = clean_text(element.get_text(" ", strip=True))
+        if not _is_section_group_header(element, text):
+            continue
+        if text not in groups:
+            groups.append(text[:180])
+        if len(groups) >= 4:
+            break
+    return groups
+
+
+def _is_section_group_header(element, text: str) -> bool:
+    if len(text) < 2 or len(text) > 180:
+        return False
+    if PART_RE.search(text):
+        return False
+    classes = " ".join(element.get("class", [])).lower()
+    return any(
+        marker in classes
+        for marker in (
+            "subtableheader",
+            "presentationheader",
+            "sectionheader",
+            "categoryheader",
+            "tableheader",
+        )
+    )
+
+
+def _merge_group_contexts(*group_lists: list[str]) -> list[str]:
+    groups: list[str] = []
+    for group_list in group_lists:
+        for group in group_list:
+            group = clean_text(group)
+            if group and group not in groups:
+                groups.append(group)
+    return groups
+
+
 def _is_header_row(row) -> bool:
     if row.find_parent("thead") is not None:
         return True
@@ -716,7 +766,7 @@ def _skip_order_cell(cell, index: int, selected_index: int | None) -> bool:
     classes = " ".join(cell.get("class", []))
     is_order_cell = any(
         marker in classes
-        for marker in ("partNumberCell", "priceCell", "nullCell")
+        for marker in ("partNumberCell", "priceCell")
     )
     if not is_order_cell:
         return False
