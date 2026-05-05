@@ -1149,45 +1149,65 @@ class OpenAIJsonClient:
         self.budget = budget
 
     def complete_json(self, system: str, user: str, *, max_completion_tokens: int = 900) -> dict[str, Any]:
-        estimated = estimate_tokens(system) + estimate_tokens(user) + max_completion_tokens
-        self.budget.reserve(estimated)
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "response_format": {"type": "json_object"},
-            "max_completion_tokens": max_completion_tokens,
-        }
-        request = urllib.request.Request(
-            "https://api.openai.com/v1/chat/completions",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=90) as response:
-                data = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            if "max_completion_tokens" in body and exc.code == 400:
-                payload.pop("max_completion_tokens", None)
-                data = self._retry_without_completion_cap(payload)
+        completion_cap = max_completion_tokens
+        last_error = ""
+        for attempt in range(3):
+            estimated = estimate_tokens(system) + estimate_tokens(user) + completion_cap
+            self.budget.reserve(estimated)
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                "response_format": {"type": "json_object"},
+                "max_completion_tokens": completion_cap,
+            }
+            data = self._request_completion(payload)
+            usage = data.get("usage") or {}
+            total_tokens = usage.get("total_tokens")
+            if not isinstance(total_tokens, int):
+                total_tokens = estimated
+            self.budget.record(total_tokens)
+            choice = data["choices"][0]
+            content = choice["message"]["content"]
+            finish_reason = clean_text(str(choice.get("finish_reason") or ""))
+            try:
+                return json.loads(content)
+            except json.JSONDecodeError as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                if attempt >= 2:
+                    raise RuntimeError(f"OpenAI returned invalid JSON after retries: {last_error}") from exc
+            if finish_reason == "length" or "Unterminated string" in last_error:
+                completion_cap = min(max(completion_cap * 2, completion_cap + 800), 5000)
             else:
-                raise RuntimeError(f"OpenAI API error {exc.code}: {body[:800]}") from exc
-        usage = data.get("usage") or {}
-        total_tokens = usage.get("total_tokens")
-        if not isinstance(total_tokens, int):
-            total_tokens = estimated
-        self.budget.record(total_tokens)
-        content = data["choices"][0]["message"]["content"]
-        return json.loads(content)
+                completion_cap = min(completion_cap + 800, 5000)
+            time.sleep(0.5 * (attempt + 1))
+        raise RuntimeError(f"OpenAI returned invalid JSON after retries: {last_error}")
 
-    def _retry_without_completion_cap(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _request_completion(self, payload: dict[str, Any]) -> dict[str, Any]:
+        active_payload = dict(payload)
+        for attempt in range(3):
+            try:
+                return self._post_completion(active_payload)
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")
+                if "max_completion_tokens" in body and exc.code == 400 and "max_completion_tokens" in active_payload:
+                    active_payload = dict(active_payload)
+                    active_payload.pop("max_completion_tokens", None)
+                    continue
+                if exc.code in {429, 500, 502, 503, 504} and attempt < 2:
+                    time.sleep(1.0 * (attempt + 1))
+                    continue
+                raise RuntimeError(f"OpenAI API error {exc.code}: {body[:800]}") from exc
+            except (TimeoutError, urllib.error.URLError) as exc:
+                if attempt < 2:
+                    time.sleep(1.0 * (attempt + 1))
+                    continue
+                raise RuntimeError(f"OpenAI API request failed: {exc}") from exc
+        raise RuntimeError("OpenAI API request failed after retries")
+
+    def _post_completion(self, payload: dict[str, Any]) -> dict[str, Any]:
         request = urllib.request.Request(
             "https://api.openai.com/v1/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
@@ -1285,7 +1305,7 @@ def llm_map_constraints_to_schema(
         },
         ensure_ascii=True,
     )
-    result = client.complete_json(system, user, max_completion_tokens=1000)
+    result = client.complete_json(system, user, max_completion_tokens=1800)
     if not isinstance(result, dict):
         raise RuntimeError("LLM mapper returned non-object JSON")
     sanitized = []

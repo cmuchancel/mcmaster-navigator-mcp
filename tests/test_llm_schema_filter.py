@@ -538,6 +538,45 @@ def test_accepted_catalog_value_guard_rejects_semantic_mismatch_and_page_artifac
         assert module.accepted_catalog_value_is_compatible("attributes.Thread Size", '3/4"-10', artifact) is False
 
 
+def test_openai_json_client_retries_truncated_json_with_larger_completion_cap():
+    for module in FILTER_MODULES:
+        class FakeClient(module.OpenAIJsonClient):
+            def __init__(self):
+                self.api_key = "test"
+                self.model = "fake-model"
+                self.budget = module.TokenBudget(10000)
+                self.payload_caps = []
+
+            def _request_completion(self, payload):
+                self.payload_caps.append(payload["max_completion_tokens"])
+                if len(self.payload_caps) == 1:
+                    return {
+                        "usage": {"total_tokens": 11},
+                        "choices": [
+                            {
+                                "message": {"content": '{"matchers": [{"field": "groups", "value": "Iron"'},
+                                "finish_reason": "length",
+                            }
+                        ],
+                    }
+                return {
+                    "usage": {"total_tokens": 12},
+                    "choices": [
+                        {
+                            "message": {"content": '{"matchers": [{"field": "groups", "value": "Iron"}]}'},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                }
+
+        client = FakeClient()
+        result = client.complete_json("system", "user", max_completion_tokens=1000)
+
+        assert result["matchers"][0]["field"] == "groups"
+        assert client.payload_caps == [1000, 2000]
+        assert client.budget.used_tokens == 23
+
+
 def test_selected_option_is_applied_before_attribute_matchers():
     matchers = [
         {"constraint": "Size", "field": "attributes.Size", "value": "1", "accepted_values": ["1"]},
