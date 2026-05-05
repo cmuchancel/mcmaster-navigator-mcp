@@ -83,7 +83,7 @@ def test_accepted_values_match_exact_live_field_values():
     assert trace[0]["after_unique_parts"] == 1
 
 
-def test_empty_accepted_values_remain_a_hard_filter_before_repair():
+def test_empty_family_values_do_not_erase_unique_attribute_match():
     rows = [
         {"part_number": "A1", "family": "Toggle Switches", "groups": ["2 Position"], "attributes": {"Terminals": "2"}},
         {"part_number": "A2", "family": "Toggle Switches", "groups": ["3 Position"], "attributes": {"Terminals": "3"}},
@@ -105,8 +105,9 @@ def test_empty_accepted_values_remain_a_hard_filter_before_repair():
 
     matches, trace = benchmark.apply_constraint_matchers(rows, matchers)
 
-    assert benchmark.unique_part_numbers(matches) == []
-    assert trace[0]["after_unique_parts"] == 0
+    assert benchmark.unique_part_numbers(matches) == ["A2"]
+    assert trace[-1]["skipped"] is True
+    assert benchmark.should_repair_matchers(matchers, trace, matches) is True
 
 
 def test_schema_search_queries_prefer_explicit_family_label():
@@ -146,3 +147,106 @@ def test_option_variants_require_matching_dynamic_option_constraint():
     assert benchmark.unique_part_numbers(unconstrained) == ["A1"]
     assert trace["removed_rows"] == 1
     assert benchmark.unique_part_numbers(constrained) == ["A1", "A2"]
+
+
+def test_explicit_labels_augment_accepted_live_values():
+    rows = [
+        {
+            "part_number": "A1",
+            "family": "Stainless Steel Socket Head Screws",
+            "groups": ["M14 × 2 mm"],
+            "attributes": {},
+        }
+    ]
+    matchers = [
+        {
+            "field": "family",
+            "value": "socket head cap screw",
+            "accepted_values": ["socket head cap screws"],
+        },
+        {
+            "field": "groups",
+            "value": "M14 x 2 mm",
+            "accepted_values": [],
+        },
+    ]
+    description = "Family: Stainless Steel Socket Head Screws; Group: M14 x 2 mm"
+
+    updated = benchmark.apply_explicit_label_values(description, matchers, rows)
+
+    assert "Stainless Steel Socket Head Screws" in updated[0]["accepted_values"]
+    assert "M14 × 2 mm" in updated[1]["accepted_values"]
+
+
+def test_explicit_attribute_label_remaps_prefixed_live_field():
+    rows = [
+        {
+            "part_number": "A1",
+            "family": "Accessory",
+            "groups": [],
+            "attributes": {"For Flange OD": '1.18"', "Inline Filters Flange OD": '1.18"'},
+        }
+    ]
+    matchers = [
+        {
+            "constraint": "For Flange OD",
+            "field": "attributes.Inline Filters Flange OD",
+            "value": '1.18"',
+            "accepted_values": ['1.18"'],
+        }
+    ]
+
+    updated = benchmark.apply_explicit_label_values('For Flange OD: 1.18"', matchers, rows)
+
+    assert updated[0]["field"] == "attributes.For Flange OD"
+    assert updated[0]["accepted_values"] == ['1.18"']
+
+
+def test_explicit_attribute_label_remaps_prefixed_suffix_field():
+    rows = [
+        {
+            "part_number": "A1",
+            "family": "Accessory",
+            "groups": [],
+            "attributes": {"Max. Temp., °F": "300°", "Inline Filters Max. Temp., °F": "300°"},
+        }
+    ]
+    matchers = [
+        {
+            "constraint": "Max. Temp.",
+            "field": "attributes.Inline Filters Max. Temp., °F",
+            "value": "300°F",
+            "accepted_values": ["300°"],
+        }
+    ]
+
+    updated = benchmark.apply_explicit_label_values("Max. Temp., °F: 300°", matchers, rows)
+
+    assert updated[0]["field"] == "attributes.Max. Temp., °F"
+
+
+def test_concrete_attributes_apply_before_conflicting_family_label():
+    rows = [
+        {
+            "part_number": "A1",
+            "family": "Accessory Family",
+            "groups": ["Quick-Clamp Connection"],
+            "attributes": {"Material": "Viton", "Size": "16"},
+        },
+        {
+            "part_number": "A2",
+            "family": "Main Family",
+            "groups": ["Quick-Clamp Connection"],
+            "attributes": {"Material": "Steel", "Size": "16"},
+        },
+    ]
+    matchers = [
+        {"field": "family", "value": "Main Family", "accepted_values": ["Main Family"]},
+        {"field": "attributes.Material", "value": "Viton", "accepted_values": ["Viton"]},
+        {"field": "attributes.Size", "value": "16", "accepted_values": ["16"]},
+    ]
+
+    matches, trace = benchmark.apply_constraint_matchers(rows, matchers)
+
+    assert benchmark.unique_part_numbers(matches) == ["A1"]
+    assert trace[-1]["skipped"] is True

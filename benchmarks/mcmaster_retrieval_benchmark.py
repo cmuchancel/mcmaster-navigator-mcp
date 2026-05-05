@@ -354,6 +354,7 @@ def score_seed_llm_schema(
             max_values=args.llm_max_field_values,
         )
         mapped["matchers"] = value_normalization.get("matchers", mapped.get("matchers", []))
+        mapped["matchers"] = apply_explicit_label_values(seed["description"], mapped.get("matchers", []), rows)
         llm_payloads["mapped"] = mapped
         llm_payloads["value_normalization"] = value_normalization
         matches, filter_trace = apply_constraint_matchers(rows, mapped.get("matchers", []))
@@ -375,6 +376,7 @@ def score_seed_llm_schema(
             llm_payloads["repair"] = repair
             repaired_matchers = repair.get("matchers", [])
             if repaired_matchers:
+                repaired_matchers = apply_explicit_label_values(seed["description"], repaired_matchers, rows)
                 mapped["matchers"] = repaired_matchers
                 llm_payloads["mapped"] = mapped
                 matches, filter_trace = apply_constraint_matchers(rows, repaired_matchers)
@@ -568,7 +570,10 @@ def summarize_dynamic_fields(rows: list[dict[str, Any]], *, max_values: int) -> 
 def apply_constraint_matchers(rows: list[dict[str, Any]], matchers: list[Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     current = list(rows)
     trace: list[dict[str, Any]] = []
-    for raw_matcher in matchers:
+    for raw_matcher in sorted(
+        [matcher for matcher in matchers if isinstance(matcher, dict)],
+        key=matcher_application_priority,
+    ):
         if not isinstance(raw_matcher, dict):
             continue
         field = clean_text(str(raw_matcher.get("field", "")))
@@ -596,6 +601,21 @@ def apply_constraint_matchers(rows: list[dict[str, Any]], matchers: list[Any]) -
             )
         ]
         after = len(unique_part_numbers(filtered))
+        if after == 0 and before == 1 and field == "family":
+            trace.append(
+                {
+                    "constraint": clean_text(str(raw_matcher.get("constraint") or value)),
+                    "field": field,
+                    "value": value,
+                    "comparator": comparator,
+                    "accepted_values": accepted_values[:20],
+                    "before_unique_parts": before,
+                    "after_unique_parts": before,
+                    "skipped": True,
+                    "skip_reason": "broad family constraint conflicts with already unique concrete match",
+                }
+            )
+            continue
         trace.append(
             {
                 "constraint": clean_text(str(raw_matcher.get("constraint") or value)),
@@ -611,6 +631,17 @@ def apply_constraint_matchers(rows: list[dict[str, Any]], matchers: list[Any]) -
         if not current:
             break
     return current, trace
+
+
+def matcher_application_priority(matcher: dict[str, Any]) -> tuple[int, str]:
+    field = clean_text(str(matcher.get("field", "")))
+    if field.startswith("attributes.") or field == "selected_option":
+        return (0, field)
+    if field == "groups":
+        return (1, field)
+    if field == "family":
+        return (2, field)
+    return (3, field)
 
 
 def apply_option_variant_scope(rows: list[dict[str, Any]], matchers: list[Any]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
@@ -727,6 +758,7 @@ def constraint_tokens(value: str) -> list[str]:
 def canonical_compare_text(value: str) -> str:
     text = clean_text(value)
     text = text.replace("°", " degree ")
+    text = text.replace("×", " x ")
     text = re.sub(r"\bdeg\.?\b", " degree ", text, flags=re.IGNORECASE)
     text = re.sub(r"\bin\.?\b", " inch ", text, flags=re.IGNORECASE)
     text = re.sub(r"\bins\.?\b", " inch ", text, flags=re.IGNORECASE)
@@ -1221,6 +1253,97 @@ def all_field_values(rows: list[dict[str, Any]], *, max_values: int) -> dict[str
             for key, value in attributes.items():
                 add(f"attributes.{clean_text(str(key))}", str(value))
     return values
+
+
+def apply_explicit_label_values(description: str, matchers: list[Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    labels = explicit_description_labels(description)
+    if not labels:
+        return [matcher for matcher in matchers if isinstance(matcher, dict)]
+    field_values = all_field_values(rows, max_values=500)
+    updated = []
+    for matcher in matchers:
+        if not isinstance(matcher, dict):
+            continue
+        field = clean_text(str(matcher.get("field", "")))
+        accepted = [
+            clean_text(str(value))
+            for value in matcher.get("accepted_values", [])
+            if clean_text(str(value))
+        ]
+        label_values: list[str] = []
+        if field == "family":
+            label_values = labels.get("family", [])
+        elif field == "groups":
+            label_values = labels.get("group", [])
+        elif field.startswith("attributes."):
+            exact_field, label_values = explicit_attribute_field_for_matcher(matcher, labels, field_values)
+            if exact_field:
+                field = exact_field
+                matcher = {**matcher, "field": exact_field}
+        for label_value in label_values:
+            for live_value in field_values.get(field, []):
+                if same_catalog_value(label_value, live_value) and live_value not in accepted:
+                    accepted.append(live_value)
+        updated.append({**matcher, "accepted_values": accepted} if "accepted_values" in matcher else matcher)
+    return updated
+
+
+def explicit_attribute_field_for_matcher(
+    matcher: dict[str, Any],
+    labels: dict[str, list[str]],
+    field_values: dict[str, list[str]],
+) -> tuple[str | None, list[str]]:
+    keys = [
+        normalize_label(str(matcher.get("constraint", ""))),
+        normalize_label(str(matcher.get("value", ""))),
+    ]
+    field = clean_text(str(matcher.get("field", "")))
+    if field.startswith("attributes."):
+        field_key = normalize_label(field.split(".", 1)[1])
+        keys.append(field_key)
+        keys.extend(
+            label
+            for label in labels
+            if field_key.endswith(label) or label.startswith(normalize_label(str(matcher.get("constraint", ""))))
+        )
+    for key in keys:
+        if key not in labels:
+            continue
+        exact_field = next(
+            (
+                live_field
+                for live_field in field_values
+                if live_field.startswith("attributes.") and normalize_label(live_field.split(".", 1)[1]) == key
+            ),
+            None,
+        )
+        if exact_field:
+            return exact_field, labels[key]
+    return None, []
+
+
+def explicit_description_labels(description: str) -> dict[str, list[str]]:
+    labels: dict[str, list[str]] = {}
+    for segment in description.split(";"):
+        if ":" not in segment:
+            continue
+        raw_label, raw_value = segment.split(":", 1)
+        label = normalize_label(raw_label)
+        value = clean_text(raw_value).strip(" .")
+        if not label or not value:
+            continue
+        labels.setdefault(label, [])
+        if value not in labels[label]:
+            labels[label].append(value)
+    return labels
+
+
+def normalize_label(value: str) -> str:
+    return normalize(canonical_compare_text(value).rstrip("."))
+
+
+def same_catalog_value(left: str, right: str) -> bool:
+    return normalize(canonical_compare_text(left)) == normalize(canonical_compare_text(right))
 
 
 def load_env_file(path: Path) -> None:

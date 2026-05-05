@@ -59,9 +59,10 @@ async def list_tools() -> list[Tool]:
             name="mcmaster_find_exact_part",
             description=(
                 "Given a detailed text description, headlessly search McMaster-Carr, "
-                "score rendered product rows/spec text, and return the single best "
-                "part-number candidate. Use this when the user supplied enough specs "
-                "to identify one exact catalog item."
+                "dynamically extract live table schemas, map the description onto those "
+                "fields, and return a single part only when the filtered rows collapse "
+                "to one candidate. Use this when the user supplied enough specs to "
+                "identify one exact catalog item."
             ),
             inputSchema={
                 "type": "object",
@@ -71,6 +72,12 @@ async def list_tools() -> list[Tool]:
                     "max_candidates": {"type": "integer", "default": 10},
                     "max_pages": {"type": "integer", "default": 20},
                     "auto_drill_depth": {"type": "integer", "default": 2},
+                    "strategy": {
+                        "type": "string",
+                        "enum": ["dynamic_schema", "deterministic"],
+                        "default": "dynamic_schema",
+                        "description": "dynamic_schema uses OPENAI_API_KEY to map constraints to live page schemas; deterministic uses the legacy text ranker.",
+                    },
                 },
                 "required": ["description"],
             },
@@ -244,6 +251,20 @@ def _dispatch_once(action: str, payload: dict[str, Any]) -> dict[str, Any]:
             auto_drill_depth=payload.get("auto_drill_depth"),
         ).to_dict()
     if action == "find_exact_part":
+        strategy = (payload.get("strategy") or "dynamic_schema").strip()
+        if strategy == "dynamic_schema":
+            from .schema_resolver import resolve_exact_part_dynamic
+
+            return resolve_exact_part_dynamic(
+                navigator,
+                payload["description"],
+                search_query=payload.get("search_query"),
+                max_candidates=int(payload.get("max_candidates", 10)),
+                max_pages=int(payload.get("max_pages", 20)),
+                auto_drill_depth=payload.get("auto_drill_depth"),
+            )
+        if strategy != "deterministic":
+            raise ValueError(f"Unknown mcmaster_find_exact_part strategy: {strategy}")
         return navigator.find_exact_part(
             payload["description"],
             search_query=payload.get("search_query"),

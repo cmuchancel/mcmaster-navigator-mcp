@@ -1,0 +1,989 @@
+from __future__ import annotations
+
+import json
+import os
+import re
+import time
+import urllib.error
+import urllib.request
+from typing import Any
+
+from .extract import clean_text
+from .models import PageSnapshot
+from .navigator import McMasterNavigator, _rank_links_for_query
+from .rank import derive_search_queries, normalize, term_matches
+
+
+class BudgetExceeded(RuntimeError):
+    pass
+
+
+class TokenBudget:
+    def __init__(self, limit: int):
+        self.limit = limit
+        self.used_tokens = 0
+        self.estimated_tokens = 0
+        self.calls = 0
+
+    def reserve(self, estimated_tokens: int) -> None:
+        if self.used_tokens + estimated_tokens > self.limit:
+            raise BudgetExceeded(f"next estimated call would exceed token budget ({self.used_tokens}+{estimated_tokens}>{self.limit})")
+        self.estimated_tokens += estimated_tokens
+
+    def record(self, tokens: int) -> None:
+        self.used_tokens += max(tokens, 0)
+        self.calls += 1
+        if self.used_tokens > self.limit:
+            raise BudgetExceeded(f"token usage exceeded budget ({self.used_tokens}>{self.limit})")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "limit": self.limit,
+            "used_tokens": self.used_tokens,
+            "estimated_reserved_tokens": self.estimated_tokens,
+            "calls": self.calls,
+            "remaining_tokens": max(self.limit - self.used_tokens, 0),
+        }
+
+
+class OpenAIJsonClient:
+    def __init__(self, *, api_key: str, model: str, budget: TokenBudget):
+        self.api_key = api_key
+        self.model = model
+        self.budget = budget
+
+    def complete_json(self, system: str, user: str, *, max_completion_tokens: int = 900) -> dict[str, Any]:
+        estimated = estimate_tokens(system) + estimate_tokens(user) + max_completion_tokens
+        self.budget.reserve(estimated)
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "response_format": {"type": "json_object"},
+            "max_completion_tokens": max_completion_tokens,
+        }
+        request = urllib.request.Request(
+            "https://api.openai.com/v1/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=90) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            if "max_completion_tokens" in body and exc.code == 400:
+                payload.pop("max_completion_tokens", None)
+                data = self._retry_without_completion_cap(payload)
+            else:
+                raise RuntimeError(f"OpenAI API error {exc.code}: {body[:800]}") from exc
+        usage = data.get("usage") or {}
+        total_tokens = usage.get("total_tokens")
+        if not isinstance(total_tokens, int):
+            total_tokens = estimated
+        self.budget.record(total_tokens)
+        content = data["choices"][0]["message"]["content"]
+        return json.loads(content)
+
+    def _retry_without_completion_cap(self, payload: dict[str, Any]) -> dict[str, Any]:
+        request = urllib.request.Request(
+            "https://api.openai.com/v1/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=90) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+
+def resolve_exact_part_dynamic(
+    navigator: McMasterNavigator,
+    description: str,
+    *,
+    search_query: str | None = None,
+    max_candidates: int = 10,
+    max_pages: int = 8,
+    auto_drill_depth: int | None = None,
+) -> dict[str, Any]:
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is required for dynamic schema resolution")
+    model = os.environ.get("MCMASTER_NAV_LLM_MODEL") or os.environ.get("FUSION_LLM_MODEL") or "gpt-5.4-mini"
+    token_budget = TokenBudget(int(os.environ.get("MCMASTER_NAV_LLM_TOKEN_BUDGET", "2500000")))
+    client = OpenAIJsonClient(api_key=api_key, model=model, budget=token_budget)
+    started = time.time()
+    llm_payloads: dict[str, Any] = {}
+    pages: list[dict[str, Any]] = []
+    filter_trace: list[dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
+    status = "error"
+    error = ""
+    selected_part_number = None
+    returned_parts: list[str] = []
+
+    try:
+        normalized = llm_extract_search_and_constraints(client, description)
+        llm_payloads["normalized"] = normalized
+        max_searches = int(os.environ.get("MCMASTER_NAV_LLM_MAX_SEARCHES", "2"))
+        if search_query:
+            search_queries = [search_query]
+            for query in schema_search_queries(description, normalized, limit=max_searches):
+                if query.lower() not in {item.lower() for item in search_queries}:
+                    search_queries.append(query)
+            search_queries = search_queries[:max_searches]
+        else:
+            search_queries = schema_search_queries(description, normalized, limit=max_searches)
+        if not search_queries:
+            search_queries = derive_search_queries(description, limit=max_searches)
+
+        rows, pages = collect_schema_rows(
+            navigator,
+            description=description,
+            search_queries=search_queries,
+            max_pages=max_pages,
+            auto_drill_depth=auto_drill_depth,
+            max_rows=int(os.environ.get("MCMASTER_NAV_LLM_MAX_ROWS", "700")),
+        )
+        field_summary = summarize_dynamic_fields(rows, max_values=int(os.environ.get("MCMASTER_NAV_LLM_MAX_FIELD_VALUES", "160")))
+        llm_payloads["field_summary"] = field_summary
+        mapped = llm_map_constraints_to_schema(
+            client,
+            description=description,
+            normalized=normalized,
+            field_summary=field_summary,
+        )
+        value_normalization = llm_normalize_matcher_values(
+            client,
+            description=description,
+            matchers=mapped.get("matchers", []),
+            rows=rows,
+            max_values=int(os.environ.get("MCMASTER_NAV_LLM_MAX_FIELD_VALUES", "160")),
+        )
+        mapped["matchers"] = value_normalization.get("matchers", mapped.get("matchers", []))
+        mapped["matchers"] = apply_explicit_label_values(description, mapped.get("matchers", []), rows)
+        llm_payloads["mapped"] = mapped
+        llm_payloads["value_normalization"] = value_normalization
+        matches, filter_trace = apply_constraint_matchers(rows, mapped.get("matchers", []))
+        matches, variant_trace = apply_option_variant_scope(matches, mapped.get("matchers", []))
+        if variant_trace:
+            filter_trace.append(variant_trace)
+
+        if should_repair_matchers(mapped.get("matchers", []), filter_trace, matches):
+            llm_payloads["initial_filter_trace"] = filter_trace
+            repair = llm_repair_matchers_from_live_schema(
+                client,
+                description=description,
+                normalized=normalized,
+                matchers=mapped.get("matchers", []),
+                field_summary=field_summary,
+                rows=rows,
+                filter_trace=filter_trace,
+                max_values=int(os.environ.get("MCMASTER_NAV_LLM_MAX_FIELD_VALUES", "160")),
+            )
+            llm_payloads["repair"] = repair
+            repaired_matchers = repair.get("matchers", [])
+            if repaired_matchers:
+                repaired_matchers = apply_explicit_label_values(description, repaired_matchers, rows)
+                mapped["matchers"] = repaired_matchers
+                llm_payloads["mapped"] = mapped
+                matches, filter_trace = apply_constraint_matchers(rows, repaired_matchers)
+                matches, variant_trace = apply_option_variant_scope(matches, repaired_matchers)
+                if variant_trace:
+                    filter_trace.append(variant_trace)
+
+        returned_parts = unique_part_numbers(matches)
+        if len(returned_parts) == 1:
+            status = "unique"
+            selected_part_number = returned_parts[0]
+        elif len(returned_parts) > 1:
+            status = "ambiguous"
+        else:
+            status = "unresolved"
+    except BudgetExceeded as exc:
+        status = "budget_exceeded"
+        error = str(exc)
+        matches = []
+    except Exception as exc:
+        status = "error"
+        error = f"{type(exc).__name__}: {exc}"
+        matches = []
+
+    return {
+        "description": description,
+        "strategy": "dynamic_schema_llm",
+        "model": model,
+        "status": status,
+        "part_number": selected_part_number,
+        "selected_part": row_result(matches[0]) if selected_part_number and matches else None,
+        "returned_part_numbers": returned_parts[:max_candidates],
+        "returned_count": len(returned_parts),
+        "candidates": [row_result(row) for row in matches[:max_candidates]],
+        "candidate_count": len(returned_parts),
+        "pages_visited": pages,
+        "filter_trace": filter_trace,
+        "llm_payloads": llm_payloads,
+        "diagnostics": {
+            "max_candidates": max_candidates,
+            "max_pages": max_pages,
+            "auto_drill_depth": auto_drill_depth,
+            "llm_usage": token_budget.to_dict(),
+            "error": error,
+            "seconds": round(time.time() - started, 3),
+        },
+    }
+
+
+def collect_schema_rows(
+    navigator: McMasterNavigator,
+    *,
+    description: str,
+    search_queries: list[str],
+    max_pages: int,
+    auto_drill_depth: int | None,
+    max_rows: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    rows: list[dict[str, Any]] = []
+    pages: list[dict[str, Any]] = []
+    seen_page_urls: set[str] = set()
+    search_pages: list[tuple[str, PageSnapshot]] = []
+    for query in search_queries:
+        if len(pages) >= max_pages:
+            break
+        page = navigator.search(query, max_depth=auto_drill_depth)
+        if page.url not in seen_page_urls:
+            pages.append(page.to_summary_dict())
+            seen_page_urls.add(page.url)
+            search_pages.append((query, page))
+        rows = merge_rows(rows, rows_from_page(page))
+        if len(rows) >= max_rows:
+            return rows[:max_rows], pages
+
+    for query, page in search_pages:
+        if len(rows) >= max_rows:
+            break
+        for link in _rank_links_for_query(page, f"{query} {description}"):
+            if len(pages) >= max_pages or len(rows) >= max_rows:
+                break
+            if link.url in seen_page_urls:
+                continue
+            try:
+                linked_page = navigator.open(link.url)
+            except Exception:
+                continue
+            pages.append(linked_page.to_summary_dict())
+            seen_page_urls.add(linked_page.url)
+            rows = merge_rows(rows, rows_from_page(linked_page))
+    return rows[:max_rows], pages
+
+
+def rows_from_page(page: PageSnapshot) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for product in page.products:
+        rows.append(
+            {
+                "part_number": product.part_number,
+                "family": product.family or page.title.replace(" | McMaster-Carr", ""),
+                "groups": list(product.groups),
+                "selected_option": product.selected_option,
+                "attributes": dict(product.attributes),
+                "evidence": product.context,
+                "source": "product_hit",
+                "url": product.url,
+                "page_url": page.url,
+                "page_title": page.title,
+                "metadata": {},
+            }
+        )
+    for schema in page.schemas:
+        for table in schema.get("tables", []):
+            for row in table.get("rows", []):
+                if not isinstance(row, dict):
+                    continue
+                part_number = clean_text(str(row.get("part_number", "")))
+                if not part_number:
+                    continue
+                attributes = row.get("attributes", {})
+                rows.append(
+                    {
+                        "part_number": part_number,
+                        "family": clean_text(str(row.get("family") or table.get("title") or schema.get("family_title") or page.title)),
+                        "groups": [clean_text(str(group)) for group in row.get("groups", []) if clean_text(str(group))],
+                        "selected_option": clean_text(str(row.get("selected_option") or "")),
+                        "attributes": attributes if isinstance(attributes, dict) else {},
+                        "evidence": clean_text(str(row.get("evidence") or "")),
+                        "source": "schema_row",
+                        "url": f"https://www.mcmaster.com/{part_number}",
+                        "page_url": page.url,
+                        "page_title": page.title,
+                        "metadata": {
+                            "option_variant": bool(row.get("option_variant")),
+                            "option_field": clean_text(str(row.get("option_field") or "")),
+                            "base_part_numbers": [
+                                clean_text(str(part)).upper()
+                                for part in row.get("base_part_numbers", [])
+                                if clean_text(str(part))
+                            ],
+                        },
+                    }
+                )
+    return merge_rows([], rows)
+
+
+def merge_rows(existing: list[dict[str, Any]], incoming: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[tuple[str, tuple[tuple[str, str], ...], tuple[str, ...]], dict[str, Any]] = {}
+    for row in [*existing, *incoming]:
+        part_number = clean_text(str(row.get("part_number", ""))).upper()
+        if not part_number:
+            continue
+        attributes = {
+            clean_text(str(key)): clean_text(str(value))
+            for key, value in dict(row.get("attributes", {})).items()
+            if clean_text(str(key)) and clean_text(str(value))
+        }
+        groups = [clean_text(str(group)) for group in row.get("groups", []) if clean_text(str(group))]
+        key = (part_number, tuple(sorted(attributes.items())), tuple(groups))
+        current = merged.get(key)
+        clean_row = {**row, "part_number": part_number, "attributes": attributes, "groups": groups}
+        if current is None:
+            merged[key] = clean_row
+            continue
+        for field in ("family", "selected_option", "evidence", "url", "page_url", "page_title"):
+            value = clean_text(str(clean_row.get(field, "")))
+            if value and len(value) > len(clean_text(str(current.get(field, "")))):
+                current[field] = value
+    return list(merged.values())
+
+
+def summarize_dynamic_fields(rows: list[dict[str, Any]], *, max_values: int) -> dict[str, Any]:
+    values = all_field_values(rows, max_values=max_values)
+    counts: dict[str, int] = {}
+    for row in rows:
+        for field in row_fields(row):
+            counts[field] = counts.get(field, 0) + 1
+    return {
+        "row_count": len(rows),
+        "fields": [
+            {"field": field, "count": counts.get(field, len(values[field])), "sample_values": values[field]}
+            for field in sorted(values)
+        ],
+    }
+
+
+def row_fields(row: dict[str, Any]) -> list[str]:
+    fields = ["family", "selected_option"]
+    fields.extend(["groups"] * len(row.get("groups", [])))
+    attributes = row.get("attributes", {})
+    if isinstance(attributes, dict):
+        fields.extend(f"attributes.{clean_text(str(key))}" for key in attributes)
+    return [field for field in fields if field]
+
+
+def apply_constraint_matchers(rows: list[dict[str, Any]], matchers: list[Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    current = list(rows)
+    trace: list[dict[str, Any]] = []
+    for raw_matcher in sorted(
+        [matcher for matcher in matchers if isinstance(matcher, dict)],
+        key=matcher_application_priority,
+    ):
+        field = clean_text(str(raw_matcher.get("field", "")))
+        value = clean_text(str(raw_matcher.get("value", "")))
+        comparator = clean_text(str(raw_matcher.get("comparator") or "contains_all_terms"))
+        accepted_values_provided = "accepted_values" in raw_matcher
+        accepted_values = [clean_text(str(item)) for item in raw_matcher.get("accepted_values", []) if clean_text(str(item))]
+        if not field or not value:
+            continue
+        before = len(unique_part_numbers(current))
+        filtered = [
+            row
+            for row in current
+            if row_matches(
+                row,
+                field,
+                value,
+                comparator,
+                accepted_values=accepted_values,
+                accepted_values_provided=accepted_values_provided,
+            )
+        ]
+        after = len(unique_part_numbers(filtered))
+        if after == 0 and before == 1 and field == "family":
+            trace.append(
+                {
+                    "constraint": clean_text(str(raw_matcher.get("constraint") or value)),
+                    "field": field,
+                    "value": value,
+                    "comparator": comparator,
+                    "accepted_values": accepted_values[:20],
+                    "before_unique_parts": before,
+                    "after_unique_parts": before,
+                    "skipped": True,
+                    "skip_reason": "broad family constraint conflicts with already unique concrete match",
+                }
+            )
+            continue
+        trace.append(
+            {
+                "constraint": clean_text(str(raw_matcher.get("constraint") or value)),
+                "field": field,
+                "value": value,
+                "comparator": comparator,
+                "accepted_values": accepted_values[:20],
+                "before_unique_parts": before,
+                "after_unique_parts": after,
+            }
+        )
+        current = filtered
+        if not current:
+            break
+    return current, trace
+
+
+def matcher_application_priority(matcher: dict[str, Any]) -> tuple[int, str]:
+    field = clean_text(str(matcher.get("field", "")))
+    if field.startswith("attributes.") or field == "selected_option":
+        return (0, field)
+    if field == "groups":
+        return (1, field)
+    if field == "family":
+        return (2, field)
+    return (3, field)
+
+
+def apply_option_variant_scope(rows: list[dict[str, Any]], matchers: list[Any]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    constrained_fields: set[str] = set()
+    for matcher in matchers:
+        if not isinstance(matcher, dict):
+            continue
+        field = clean_text(str(matcher.get("field", "")))
+        if field == "row_text":
+            return rows, None
+        if field == "selected_option":
+            constrained_fields.add("selected_option")
+        if field.startswith("attributes."):
+            constrained_fields.add(field.split(".", 1)[1])
+    current_parts = set(unique_part_numbers(rows))
+    filtered: list[dict[str, Any]] = []
+    removed = 0
+    for row in rows:
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        option_field = clean_text(str(metadata.get("option_field") or ""))
+        base_parts = {clean_text(str(part)).upper() for part in metadata.get("base_part_numbers", []) if clean_text(str(part))}
+        option_is_constrained = option_field in constrained_fields or "selected_option" in constrained_fields
+        if metadata.get("option_variant") and option_field and not option_is_constrained and current_parts.intersection(base_parts):
+            removed += 1
+            continue
+        filtered.append(row)
+    if not removed:
+        return rows, None
+    return filtered, {
+        "constraint": "unrequested linked option variants",
+        "field": "metadata.option_variant",
+        "value": "",
+        "comparator": "dynamic_option_scope",
+        "accepted_values": [],
+        "before_unique_parts": len(current_parts),
+        "after_unique_parts": len(unique_part_numbers(filtered)),
+        "removed_rows": removed,
+    }
+
+
+def row_matches(
+    row: dict[str, Any],
+    field: str,
+    value: str,
+    comparator: str = "contains_all_terms",
+    *,
+    accepted_values: list[str] | None = None,
+    accepted_values_provided: bool = False,
+) -> bool:
+    if accepted_values_provided:
+        if not accepted_values:
+            return False
+        accepted = {normalize(canonical_compare_text(item)) for item in accepted_values}
+        return any(normalize(canonical_compare_text(item)) in accepted for item in row_field_values(row, field))
+    evidence = row_field_text(row, field)
+    if not evidence:
+        return False
+    evidence_norm = normalize(canonical_compare_text(evidence))
+    value_norm = normalize(canonical_compare_text(value))
+    if comparator == "equals_normalized":
+        return evidence_norm == value_norm
+    if comparator == "contains_phrase":
+        return value_norm in evidence_norm
+    tokens = constraint_tokens(value)
+    if comparator == "contains_any_term":
+        return bool(tokens) and any(term_matches(token, evidence_norm) for token in tokens)
+    return bool(tokens) and all(term_matches(token, evidence_norm) for token in tokens)
+
+
+def row_field_text(row: dict[str, Any], field: str) -> str:
+    return " ".join(row_field_values(row, field))
+
+
+def row_field_values(row: dict[str, Any], field: str) -> list[str]:
+    if field == "family":
+        return [str(row.get("family", ""))]
+    if field == "groups":
+        return [str(group) for group in row.get("groups", [])]
+    if field == "selected_option":
+        return [str(row.get("selected_option", ""))]
+    if field == "row_text":
+        return [row_text(row)]
+    if field.startswith("attributes."):
+        key = field.split(".", 1)[1]
+        attributes = row.get("attributes", {})
+        if isinstance(attributes, dict):
+            return [str(attributes.get(key, ""))]
+    return []
+
+
+def row_text(row: dict[str, Any]) -> str:
+    pieces = [str(row.get("family", "")), *[str(group) for group in row.get("groups", [])], str(row.get("selected_option", ""))]
+    attributes = row.get("attributes", {})
+    if isinstance(attributes, dict):
+        pieces.extend(f"{key}: {value}" for key, value in attributes.items())
+    pieces.append(str(row.get("evidence", "")))
+    return " ".join(piece for piece in pieces if piece)
+
+
+def unique_part_numbers(rows: list[dict[str, Any]]) -> list[str]:
+    seen: set[str] = set()
+    parts: list[str] = []
+    for row in rows:
+        part = clean_text(str(row.get("part_number", ""))).upper()
+        if part and part not in seen:
+            seen.add(part)
+            parts.append(part)
+    return parts
+
+
+def row_result(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "part_number": row.get("part_number"),
+        "url": row.get("url"),
+        "family": row.get("family"),
+        "groups": row.get("groups", []),
+        "selected_option": row.get("selected_option", ""),
+        "attributes": row.get("attributes", {}),
+        "evidence": row.get("evidence", ""),
+        "source": row.get("source", ""),
+    }
+
+
+def schema_search_queries(description: str, normalized: dict[str, Any], *, limit: int) -> list[str]:
+    queries: list[str] = []
+
+    def add(value: str) -> None:
+        query = clean_text(value)
+        if query and query.lower() not in {item.lower() for item in queries}:
+            queries.append(query)
+
+    for match in re.finditer(r"\bFamily:\s*([^.;]+)", description, flags=re.IGNORECASE):
+        add(match.group(1))
+    first_segment = clean_text(re.split(r"[.;]", description, maxsplit=1)[0])
+    if 1 <= len(first_segment.split()) <= 5 and not re.search(r"\d", first_segment):
+        add(first_segment)
+    for query in normalized.get("search_queries", []):
+        if isinstance(query, str):
+            add(query)
+    return queries[:limit]
+
+
+def llm_extract_search_and_constraints(client: OpenAIJsonClient, description: str) -> dict[str, Any]:
+    system = (
+        "You convert a mechanical catalog part description into search queries and explicit constraints. "
+        "Do not use supplier part numbers. Do not assume a fixed ontology. Return only JSON."
+    )
+    user = json.dumps(
+        {
+            "task": "Extract broad McMaster-Carr search queries and exact constraints from the description.",
+            "description": description,
+            "output_schema": {
+                "search_queries": ["short broad product-family query, usually 2-4 words"],
+                "constraints": [{"constraint": "literal requested requirement", "value": "value to match on a catalog row", "required": True}],
+            },
+            "rules": [
+                "The first search query must be the broad product family, not a fully specified part.",
+                "Prefer product-family search queries such as socket head screw, compression spring, drawer slide.",
+                "Omit dimensions, ratings, materials, counts, finishes, and option values from search queries unless they are part of the product-family noun.",
+                "If the description explicitly says Family: X, include X as a search query.",
+                "Constraints should contain only requirements present in the description.",
+            ],
+        },
+        ensure_ascii=True,
+    )
+    result = client.complete_json(system, user, max_completion_tokens=900)
+    if not isinstance(result, dict):
+        raise RuntimeError("LLM normalizer returned non-object JSON")
+    return result
+
+
+def llm_map_constraints_to_schema(
+    client: OpenAIJsonClient,
+    *,
+    description: str,
+    normalized: dict[str, Any],
+    field_summary: dict[str, Any],
+) -> dict[str, Any]:
+    allowed_fields = [field["field"] for field in field_summary.get("fields", []) if isinstance(field, dict)]
+    system = (
+        "You map requested part constraints to fields dynamically extracted from a supplier catalog page. "
+        "You are not selecting a part number. Python will filter rows exactly after your mapping. "
+        "Do not invent fields. Return only JSON."
+    )
+    user = json.dumps(
+        {
+            "task": "Map each required constraint to one available field so deterministic code can filter rows.",
+            "description": description,
+            "normalized_constraints": normalized.get("constraints", []),
+            "available_fields": allowed_fields,
+            "field_summary": field_summary,
+            "output_schema": {
+                "matchers": [
+                    {"constraint": "requested requirement", "field": "one of available_fields or row_text", "value": "literal value", "comparator": "contains_all_terms"}
+                ],
+                "unmapped_constraints": ["constraint text if no available field can test it"],
+            },
+            "rules": [
+                "Use groups for values that appear as table group headings.",
+                "Use attributes.<column name> for values that appear under a specific dynamic table column.",
+                "Use family only for the broad product family.",
+                "Use row_text only if no specific field can represent the constraint.",
+                "Do not output a matcher for a constraint unless the field summary shows the field exists.",
+            ],
+        },
+        ensure_ascii=True,
+    )
+    result = client.complete_json(system, user, max_completion_tokens=1000)
+    if not isinstance(result, dict):
+        raise RuntimeError("LLM mapper returned non-object JSON")
+    return sanitize_matchers(result, allowed_fields)
+
+
+def sanitize_matchers(result: dict[str, Any], allowed_fields: list[str]) -> dict[str, Any]:
+    sanitized = []
+    allowed = set(allowed_fields) | {"row_text"}
+    for matcher in result.get("matchers", []):
+        if not isinstance(matcher, dict):
+            continue
+        field = clean_text(str(matcher.get("field", "")))
+        value = clean_text(str(matcher.get("value", "")))
+        comparator = clean_text(str(matcher.get("comparator") or "contains_all_terms"))
+        if comparator not in {"contains_all_terms", "contains_phrase", "equals_normalized", "contains_any_term"}:
+            comparator = "contains_all_terms"
+        if field in allowed and value:
+            sanitized.append(
+                {
+                    "constraint": clean_text(str(matcher.get("constraint") or value)),
+                    "field": field,
+                    "value": value,
+                    "comparator": comparator,
+                }
+            )
+    result["matchers"] = sanitized
+    return result
+
+
+def llm_normalize_matcher_values(
+    client: OpenAIJsonClient,
+    *,
+    description: str,
+    matchers: list[Any],
+    rows: list[dict[str, Any]],
+    max_values: int,
+) -> dict[str, Any]:
+    clean_matchers = [matcher for matcher in matchers if isinstance(matcher, dict)]
+    field_values = values_for_matchers(rows, clean_matchers, max_values=max_values)
+    system = (
+        "You normalize both sides of catalog comparisons. For each matcher, choose the exact raw "
+        "field values from the live supplier page that satisfy the requested constraint. "
+        "Do not invent values. Return only JSON."
+    )
+    user = json.dumps(
+        {
+            "task": "For each matcher, select accepted raw field values from the supplied field_values.",
+            "description": description,
+            "matchers": clean_matchers,
+            "field_values": field_values,
+            "output_schema": {"matchers": [{"constraint": "same", "field": "same", "value": "same", "comparator": "same", "accepted_values": ["exact strings copied from field_values[field]"]}]},
+            "rules": [
+                "accepted_values must be copied exactly from field_values for that field.",
+                "Use the full description to resolve aliases, units, abbreviations, and product-family wording.",
+                "If no supplied value satisfies the constraint, use an empty accepted_values list.",
+            ],
+        },
+        ensure_ascii=True,
+    )
+    result = client.complete_json(system, user, max_completion_tokens=1600)
+    if not isinstance(result, dict):
+        raise RuntimeError("LLM value normalizer returned non-object JSON")
+    return normalize_matcher_output(result, clean_matchers, field_values)
+
+
+def llm_repair_matchers_from_live_schema(
+    client: OpenAIJsonClient,
+    *,
+    description: str,
+    normalized: dict[str, Any],
+    matchers: list[Any],
+    field_summary: dict[str, Any],
+    rows: list[dict[str, Any]],
+    filter_trace: list[dict[str, Any]],
+    max_values: int,
+) -> dict[str, Any]:
+    field_values = all_field_values(rows, max_values=max_values)
+    system = (
+        "You repair a schema-grounded catalog matcher. Use only fields and exact raw values "
+        "from the live supplier page. You are not selecting a part number. Return only JSON."
+    )
+    user = json.dumps(
+        {
+            "task": "Repair the matchers so deterministic code can filter rows without hardcoded part-family logic.",
+            "description": description,
+            "normalized_constraints": normalized.get("constraints", []),
+            "initial_matchers": [matcher for matcher in matchers if isinstance(matcher, dict)],
+            "initial_filter_trace": filter_trace,
+            "field_summary": field_summary,
+            "field_values": field_values,
+            "output_schema": {
+                "matchers": [{"constraint": "requested requirement", "field": "one key from field_values", "value": "literal requested value", "comparator": "equals_normalized", "accepted_values": ["exact strings copied from field_values[field]"]}],
+                "untestable_constraints": ["required description constraint not represented by supplied field values"],
+            },
+            "rules": [
+                "Every accepted_values item must be copied exactly from field_values for the chosen field.",
+                "Do not output a matcher unless accepted_values is non-empty.",
+                "Do not choose close-looking values that contradict a requested dimension, rating, material, count, or option.",
+                "If a required constraint cannot be grounded in the supplied values, put it in untestable_constraints.",
+            ],
+        },
+        ensure_ascii=True,
+    )
+    result = client.complete_json(system, user, max_completion_tokens=2200)
+    if not isinstance(result, dict):
+        raise RuntimeError("LLM repair returned non-object JSON")
+    return repair_matcher_output(result, field_values)
+
+
+def normalize_matcher_output(result: dict[str, Any], clean_matchers: list[dict[str, Any]], field_values: dict[str, list[str]]) -> dict[str, Any]:
+    allowed_by_field = {field: set(values) for field, values in field_values.items()}
+    normalized_matchers = []
+    by_key = {
+        (clean_text(str(matcher.get("constraint", ""))), clean_text(str(matcher.get("field", ""))), clean_text(str(matcher.get("value", "")))): matcher
+        for matcher in clean_matchers
+    }
+    for matcher in result.get("matchers", []):
+        if not isinstance(matcher, dict):
+            continue
+        field = clean_text(str(matcher.get("field", "")))
+        accepted = [clean_text(str(value)) for value in matcher.get("accepted_values", []) if clean_text(str(value)) in allowed_by_field.get(field, set())]
+        key = (clean_text(str(matcher.get("constraint", ""))), field, clean_text(str(matcher.get("value", ""))))
+        base = by_key.get(key, matcher)
+        normalized_matchers.append({**base, "accepted_values": accepted})
+    if len(normalized_matchers) != len(clean_matchers):
+        seen_keys = {
+            (clean_text(str(matcher.get("constraint", ""))), clean_text(str(matcher.get("field", ""))), clean_text(str(matcher.get("value", ""))))
+            for matcher in normalized_matchers
+        }
+        for matcher in clean_matchers:
+            key = (clean_text(str(matcher.get("constraint", ""))), clean_text(str(matcher.get("field", ""))), clean_text(str(matcher.get("value", ""))))
+            if key not in seen_keys:
+                normalized_matchers.append({**matcher, "accepted_values": []})
+    result["matchers"] = normalized_matchers
+    return result
+
+
+def repair_matcher_output(result: dict[str, Any], field_values: dict[str, list[str]]) -> dict[str, Any]:
+    allowed_by_field = {field: set(values) for field, values in field_values.items()}
+    repaired = []
+    for matcher in result.get("matchers", []):
+        if not isinstance(matcher, dict):
+            continue
+        field = clean_text(str(matcher.get("field", "")))
+        accepted = [clean_text(str(value)) for value in matcher.get("accepted_values", []) if clean_text(str(value)) in allowed_by_field.get(field, set())]
+        if not accepted:
+            continue
+        comparator = clean_text(str(matcher.get("comparator") or "equals_normalized"))
+        if comparator not in {"contains_all_terms", "contains_phrase", "equals_normalized", "contains_any_term"}:
+            comparator = "equals_normalized"
+        repaired.append(
+            {
+                "constraint": clean_text(str(matcher.get("constraint") or matcher.get("value") or field)),
+                "field": field,
+                "value": clean_text(str(matcher.get("value") or matcher.get("constraint") or "")),
+                "comparator": comparator,
+                "accepted_values": accepted,
+            }
+        )
+    result["matchers"] = repaired
+    result["untestable_constraints"] = [clean_text(str(item)) for item in result.get("untestable_constraints", []) if clean_text(str(item))]
+    return result
+
+
+def values_for_matchers(rows: list[dict[str, Any]], matchers: list[dict[str, Any]], *, max_values: int) -> dict[str, list[str]]:
+    fields = []
+    for matcher in matchers:
+        field = clean_text(str(matcher.get("field", "")))
+        if field and field not in fields:
+            fields.append(field)
+    values: dict[str, list[str]] = {field: [] for field in fields}
+    for row in rows:
+        for field in fields:
+            if field == "row_text":
+                continue
+            for value in row_field_values(row, field):
+                text = clean_text(value)
+                if text and text not in values[field] and len(values[field]) < max_values:
+                    values[field].append(text)
+    return values
+
+
+def all_field_values(rows: list[dict[str, Any]], *, max_values: int) -> dict[str, list[str]]:
+    values: dict[str, list[str]] = {}
+
+    def add(field: str, value: str) -> None:
+        field = clean_text(field)
+        text = clean_text(value)
+        if not field or not text:
+            return
+        slot = values.setdefault(field, [])
+        if text not in slot and len(slot) < max_values:
+            slot.append(text)
+
+    for row in rows:
+        add("family", str(row.get("family", "")))
+        for group in row.get("groups", []):
+            add("groups", str(group))
+        add("selected_option", str(row.get("selected_option", "")))
+        attributes = row.get("attributes", {})
+        if isinstance(attributes, dict):
+            for key, value in attributes.items():
+                add(f"attributes.{clean_text(str(key))}", str(value))
+    return values
+
+
+def apply_explicit_label_values(description: str, matchers: list[Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    labels = explicit_description_labels(description)
+    if not labels:
+        return [matcher for matcher in matchers if isinstance(matcher, dict)]
+    field_values = all_field_values(rows, max_values=500)
+    updated = []
+    for matcher in matchers:
+        if not isinstance(matcher, dict):
+            continue
+        field = clean_text(str(matcher.get("field", "")))
+        accepted = [clean_text(str(value)) for value in matcher.get("accepted_values", []) if clean_text(str(value))]
+        label_values: list[str] = []
+        if field == "family":
+            label_values = labels.get("family", [])
+        elif field == "groups":
+            label_values = labels.get("group", [])
+        elif field.startswith("attributes."):
+            exact_field, label_values = explicit_attribute_field_for_matcher(matcher, labels, field_values)
+            if exact_field:
+                field = exact_field
+                matcher = {**matcher, "field": exact_field}
+        for label_value in label_values:
+            for live_value in field_values.get(field, []):
+                if same_catalog_value(label_value, live_value) and live_value not in accepted:
+                    accepted.append(live_value)
+        updated.append({**matcher, "accepted_values": accepted} if "accepted_values" in matcher else matcher)
+    return updated
+
+
+def explicit_attribute_field_for_matcher(
+    matcher: dict[str, Any],
+    labels: dict[str, list[str]],
+    field_values: dict[str, list[str]],
+) -> tuple[str | None, list[str]]:
+    keys = [
+        normalize_label(str(matcher.get("constraint", ""))),
+        normalize_label(str(matcher.get("value", ""))),
+    ]
+    field = clean_text(str(matcher.get("field", "")))
+    if field.startswith("attributes."):
+        field_key = normalize_label(field.split(".", 1)[1])
+        keys.append(field_key)
+        keys.extend(
+            label
+            for label in labels
+            if field_key.endswith(label) or label.startswith(normalize_label(str(matcher.get("constraint", ""))))
+        )
+    for key in keys:
+        if key not in labels:
+            continue
+        exact_field = next(
+            (
+                live_field
+                for live_field in field_values
+                if live_field.startswith("attributes.") and normalize_label(live_field.split(".", 1)[1]) == key
+            ),
+            None,
+        )
+        if exact_field:
+            return exact_field, labels[key]
+    return None, []
+
+
+def explicit_description_labels(description: str) -> dict[str, list[str]]:
+    labels: dict[str, list[str]] = {}
+    for segment in description.split(";"):
+        if ":" not in segment:
+            continue
+        raw_label, raw_value = segment.split(":", 1)
+        label = normalize_label(raw_label)
+        value = clean_text(raw_value).strip(" .")
+        if not label or not value:
+            continue
+        labels.setdefault(label, [])
+        if value not in labels[label]:
+            labels[label].append(value)
+    return labels
+
+
+def normalize_label(value: str) -> str:
+    return normalize(canonical_compare_text(value).rstrip("."))
+
+
+def same_catalog_value(left: str, right: str) -> bool:
+    return normalize(canonical_compare_text(left)) == normalize(canonical_compare_text(right))
+
+
+def should_repair_matchers(matchers: list[Any], trace: list[dict[str, Any]], matches: list[dict[str, Any]]) -> bool:
+    if not matches:
+        return True
+    for matcher in matchers:
+        if isinstance(matcher, dict) and "accepted_values" in matcher and not matcher.get("accepted_values"):
+            return True
+    return any(int(step.get("before_unique_parts") or 0) > 0 and int(step.get("after_unique_parts") or 0) == 0 for step in trace)
+
+
+def constraint_tokens(value: str) -> list[str]:
+    return [
+        token
+        for token in normalize(canonical_compare_text(value)).split()
+        if token and token not in {"and", "or", "the", "with", "for"}
+    ]
+
+
+def canonical_compare_text(value: str) -> str:
+    text = clean_text(value)
+    text = text.replace("°", " degree ")
+    text = text.replace("×", " x ")
+    text = re.sub(r"\bdeg\.?\b", " degree ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bin\.?\b", " inch ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bins\.?\b", " inch ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\binches\b", " inch ", text, flags=re.IGNORECASE)
+    return clean_text(text)
+
+
+def estimate_tokens(text: str) -> int:
+    return max(1, len(text) // 3)
