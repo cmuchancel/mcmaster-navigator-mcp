@@ -1197,7 +1197,50 @@ def apply_explicit_label_values(description: str, matchers: list[Any], rows: lis
                 if same_catalog_value(label_value, live_value) and live_value not in accepted:
                     accepted.append(live_value)
         updated.append({**matcher, "accepted_values": accepted} if "accepted_values" in matcher else matcher)
+    updated = add_missing_explicit_context_matchers(labels, updated, field_values)
     return add_missing_explicit_selected_option_matchers(labels, updated, field_values)
+
+
+def add_missing_explicit_context_matchers(
+    labels: dict[str, list[str]],
+    matchers: list[dict[str, Any]],
+    field_values: dict[str, list[str]],
+) -> list[dict[str, Any]]:
+    updated = list(matchers)
+    existing_keys = explicit_matcher_keys(updated)
+    for label_key, field, constraint in (("family", "family", "Family"), ("group", "groups", "Group")):
+        for label_value in labels.get(label_key, []):
+            accepted = [
+                live_value
+                for live_value in field_values.get(field, [])
+                if same_catalog_value(label_value, live_value)
+            ]
+            if not accepted:
+                continue
+            key = (field, tuple(accepted))
+            if key in existing_keys:
+                continue
+            updated.append(
+                {
+                    "constraint": constraint,
+                    "field": field,
+                    "value": label_value,
+                    "comparator": "equals_normalized",
+                    "accepted_values": accepted,
+                }
+            )
+            existing_keys.add(key)
+    return updated
+
+
+def explicit_matcher_keys(matchers: list[dict[str, Any]]) -> set[tuple[str, tuple[str, ...]]]:
+    keys: set[tuple[str, tuple[str, ...]]] = set()
+    for matcher in matchers:
+        field = clean_text(str(matcher.get("field", "")))
+        accepted = tuple(clean_text(str(value)) for value in matcher.get("accepted_values", []) if clean_text(str(value)))
+        if field and accepted:
+            keys.add((field, accepted))
+    return keys
 
 
 def add_missing_explicit_selected_option_matchers(

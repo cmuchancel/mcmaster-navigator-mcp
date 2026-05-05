@@ -325,6 +325,36 @@ def test_repeated_group_labels_do_not_cross_pollinate_group_matchers():
         assert module.unique_part_numbers(matches) == ["A1"]
 
 
+def test_explicit_group_label_adds_missing_matcher():
+    rows = [
+        {
+            "part_number": "5105A31",
+            "family": "Locking Pliers Clamps",
+            "groups": ["Smooth Fixed Jaws"],
+            "attributes": {"Opening Max.": '10"', "Overall Lg.": '24"'},
+        },
+        {
+            "part_number": "5105A32",
+            "family": "Locking Pliers Clamps",
+            "groups": ["Smooth Pivoting Jaws"],
+            "attributes": {"Opening Max.": '10"', "Overall Lg.": '24"'},
+        },
+    ]
+    matchers = [
+        {"constraint": "Opening Max.", "field": "attributes.Opening Max.", "value": '10"', "accepted_values": ['10"']},
+        {"constraint": "Overall Lg.", "field": "attributes.Overall Lg.", "value": '24"', "accepted_values": ['24"']},
+    ]
+    description = 'Family: Locking Pliers Clamps; Group: Smooth Fixed Jaws; Opening Max.: 10"; Overall Lg.: 24"'
+
+    for module in FILTER_MODULES:
+        updated = module.apply_explicit_label_values(description, matchers, rows)
+
+        assert updated[-1]["field"] == "groups"
+        assert updated[-1]["accepted_values"] == ["Smooth Fixed Jaws"]
+        matches, _trace = module.apply_constraint_matchers(rows, updated)
+        assert module.unique_part_numbers(matches) == ["5105A31"]
+
+
 def test_literal_identifier_is_grounded_to_live_dynamic_field():
     rows = [
         {"part_number": "A1", "family": "Digital Calipers", "groups": [], "attributes": {"Mfr. Model No.": "500-171-32"}},
