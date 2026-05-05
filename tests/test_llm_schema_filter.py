@@ -408,3 +408,27 @@ def test_family_link_priority_prefers_exact_family_category_over_modified_siblin
 
     for module in FILTER_MODULES:
         assert module.family_link_priority(exact, family_values) < module.family_link_priority(sibling, family_values)
+
+
+def test_explicit_selected_option_label_adds_missing_matcher():
+    rows = [
+        {"part_number": "A1", "family": "L-Keys", "groups": [], "selected_option": "Each", "attributes": {"Drive Size": '1/8 "'}},
+        {"part_number": "A2", "family": "L-Keys", "groups": [], "selected_option": "Package", "attributes": {"Drive Size": '1/8 "'}},
+    ]
+    matchers = [
+        {"constraint": "Drive Size", "field": "attributes.Drive Size", "value": "1/8 in", "accepted_values": ['1/8 "']},
+    ]
+    description = "Selected option: Package; Drive Size: 1/8 \""
+
+    for module in FILTER_MODULES:
+        updated = module.apply_explicit_label_values(description, matchers, rows)
+        assert updated[-1] == {
+            "constraint": "Selected option",
+            "field": "selected_option",
+            "value": "Package",
+            "comparator": "equals_normalized",
+            "accepted_values": ["Package"],
+        }
+
+        matches, _trace = module.apply_constraint_matchers(rows, updated)
+        assert module.unique_part_numbers(matches) == ["A2"]

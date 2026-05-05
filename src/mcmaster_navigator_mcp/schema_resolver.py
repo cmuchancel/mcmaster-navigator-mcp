@@ -1043,6 +1043,8 @@ def apply_explicit_label_values(description: str, matchers: list[Any], rows: lis
                 for label_value in labels.get("group", [])
                 if label_value_matches_matcher(label_value, matcher)
             ]
+        elif field == "selected_option":
+            label_values = labels.get("selected option", [])
         elif field.startswith("attributes."):
             exact_field, label_values = explicit_attribute_field_for_matcher(matcher, labels, field_values)
             if exact_field:
@@ -1053,6 +1055,34 @@ def apply_explicit_label_values(description: str, matchers: list[Any], rows: lis
                 if same_catalog_value(label_value, live_value) and live_value not in accepted:
                     accepted.append(live_value)
         updated.append({**matcher, "accepted_values": accepted} if "accepted_values" in matcher else matcher)
+    return add_missing_explicit_selected_option_matchers(labels, updated, field_values)
+
+
+def add_missing_explicit_selected_option_matchers(
+    labels: dict[str, list[str]],
+    matchers: list[dict[str, Any]],
+    field_values: dict[str, list[str]],
+) -> list[dict[str, Any]]:
+    if any(clean_text(str(matcher.get("field", ""))) == "selected_option" for matcher in matchers):
+        return matchers
+    updated = list(matchers)
+    for label_value in labels.get("selected option", []):
+        accepted = [
+            live_value
+            for live_value in field_values.get("selected_option", [])
+            if same_catalog_value(label_value, live_value)
+        ]
+        if not accepted:
+            continue
+        updated.append(
+            {
+                "constraint": "Selected option",
+                "field": "selected_option",
+                "value": label_value,
+                "comparator": "equals_normalized",
+                "accepted_values": accepted,
+            }
+        )
     return updated
 
 
