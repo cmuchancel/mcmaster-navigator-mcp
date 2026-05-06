@@ -180,10 +180,7 @@ def make_nonexistent_description(exact_description: str) -> str:
 
 def make_ambiguous_description(seed: dict[str, Any]) -> str:
     query = clean_text(str(seed.get("seed_query") or "part"))
-    category = clean_text(str(seed.get("category") or ""))
-    if category:
-        return f"{query}. General {category} catalog item. No size, material, rating, finish, package quantity, or option is specified."
-    return f"{query}. General catalog item. No size, material, rating, finish, package quantity, or option is specified."
+    return query
 
 
 def score_case(navigator: McMasterNavigator, case: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
