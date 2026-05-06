@@ -229,7 +229,14 @@ def resolve_exact_part_dynamic(
                 if variant_trace:
                     filter_trace.append(variant_trace)
 
-        returned_parts = unique_part_numbers(matches)
+        matches, returned_parts, ambiguity_trace = maybe_preserve_broad_ambiguity(
+            description=description,
+            mapped=mapped,
+            rows=rows,
+            matches=matches,
+        )
+        if ambiguity_trace:
+            filter_trace.append(ambiguity_trace)
         if len(returned_parts) == 1:
             status = "unique"
             selected_part_number = returned_parts[0]
@@ -904,6 +911,62 @@ def unique_part_numbers(rows: list[dict[str, Any]]) -> list[str]:
             seen.add(part)
             parts.append(part)
     return parts
+
+
+def maybe_preserve_broad_ambiguity(
+    *,
+    description: str,
+    mapped: dict[str, Any],
+    rows: list[dict[str, Any]],
+    matches: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str], dict[str, Any] | None]:
+    returned_parts = unique_part_numbers(matches)
+    broad_parts = unique_part_numbers(rows)
+    if len(returned_parts) != 1 or len(broad_parts) <= 1:
+        return matches, returned_parts, None
+    if not broad_request_should_remain_ambiguous(description, mapped):
+        return matches, returned_parts, None
+    return list(rows), broad_parts, {
+        "constraint": "underspecified broad request",
+        "field": "metadata.ambiguity_guard",
+        "value": clean_text(description),
+        "comparator": "preserve_live_catalog_ambiguity",
+        "accepted_values": [],
+        "before_unique_parts": 1,
+        "after_unique_parts": len(broad_parts),
+        "matched_fields": sorted(
+            {
+                clean_text(str(matcher.get("field", "")))
+                for matcher in mapped.get("matchers", [])
+                if isinstance(matcher, dict) and clean_text(str(matcher.get("field", "")))
+            }
+        ),
+        "candidate_part_numbers": broad_parts[:20],
+    }
+
+
+def broad_request_should_remain_ambiguous(description: str, mapped: dict[str, Any]) -> bool:
+    if LITERAL_IDENTIFIER_RE.search(description) or re.search(r"\d", description):
+        return False
+    if mapped.get("unmapped_constraints"):
+        return False
+    matchers = [matcher for matcher in mapped.get("matchers", []) if isinstance(matcher, dict)]
+    if not matchers:
+        return False
+    broad_fields = {"family", "groups", "row_text"}
+    for matcher in matchers:
+        field = clean_text(str(matcher.get("field", "")))
+        if field not in broad_fields:
+            return False
+        values = [clean_text(str(matcher.get("value", "")))]
+        if "accepted_values" in matcher:
+            accepted_values = [clean_text(str(value)) for value in matcher.get("accepted_values", []) if clean_text(str(value))]
+            if not accepted_values:
+                return False
+            values.extend(accepted_values)
+        if any(LITERAL_IDENTIFIER_RE.search(value) or re.search(r"\d", value) for value in values):
+            return False
+    return True
 
 
 def row_result(row: dict[str, Any]) -> dict[str, Any]:

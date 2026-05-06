@@ -720,3 +720,62 @@ def test_unique_candidate_verification_requires_match_and_no_missing_constraints
     assert schema_resolver.verification_accepts_unique_candidate(
         {"matches": True, "missing_or_contradicted_constraints": ["color transparent magenta plaid"]}
     ) is False
+
+
+def test_broad_family_only_request_stays_ambiguous_after_accidental_unique_filter():
+    rows = [
+        {"part_number": "2498N11", "family": "Welding Clamps", "groups": ["Fixed Jaw"], "attributes": {}},
+        {"part_number": "2498N12", "family": "Welding Clamps", "groups": ["Pivoting Jaw"], "attributes": {}},
+        {"part_number": "2498N13", "family": "Self-Adjusting Locking Pliers Clamps", "groups": ["Fixed Jaw"], "attributes": {}},
+    ]
+    matches = [rows[0]]
+    mapped = {
+        "matchers": [
+            {
+                "constraint": "description",
+                "field": "family",
+                "value": "welding clamps",
+                "accepted_values": ["welding clamps"],
+            }
+        ],
+        "unmapped_constraints": [],
+    }
+
+    widened, returned_parts, trace = schema_resolver.maybe_preserve_broad_ambiguity(
+        description="welding clamp",
+        mapped=mapped,
+        rows=rows,
+        matches=matches,
+    )
+
+    assert returned_parts == ["2498N11", "2498N12", "2498N13"]
+    assert widened == rows
+    assert trace is not None
+    assert trace["field"] == "metadata.ambiguity_guard"
+    assert trace["after_unique_parts"] == 3
+
+
+def test_specific_or_ungrounded_constraints_do_not_use_broad_ambiguity_guard():
+    broad_mapped = {
+        "matchers": [{"field": "family", "value": "welding clamps", "accepted_values": ["welding clamps"]}],
+        "unmapped_constraints": [],
+    }
+    specific_mapped = {
+        "matchers": [
+            {"field": "family", "value": "welding clamps", "accepted_values": ["welding clamps"]},
+            {"field": "attributes.Opening Max.", "value": '2-1/4"', "accepted_values": ['2-1/4"']},
+        ],
+        "unmapped_constraints": [],
+    }
+    ungrounded_mapped = {
+        "matchers": [
+            {"field": "family", "value": "welding clamps", "accepted_values": ["welding clamps"]},
+            {"field": "attributes.Material", "value": "unobtainium", "accepted_values": []},
+        ],
+        "unmapped_constraints": [],
+    }
+
+    assert schema_resolver.broad_request_should_remain_ambiguous("welding clamp", broad_mapped) is True
+    assert schema_resolver.broad_request_should_remain_ambiguous('welding clamp with 2-1/4" opening', broad_mapped) is False
+    assert schema_resolver.broad_request_should_remain_ambiguous("welding clamp with maximum opening", specific_mapped) is False
+    assert schema_resolver.broad_request_should_remain_ambiguous("welding clamp made of unobtainium", ungrounded_mapped) is False
