@@ -606,3 +606,54 @@ def test_bad_late_attribute_does_not_erase_narrowed_match_set():
         assert module.unique_part_numbers(matches) == ["A1"]
         assert trace[1]["skipped"] is True
         assert trace[1]["skip_reason"] == "constraint conflicts with narrowed grounded match"
+
+
+def test_score_seed_timeout_restarts_browser_and_records_structured_result(monkeypatch):
+    class FakeNavigator:
+        instances = []
+
+        def __init__(self):
+            self.closed = False
+            self.instances.append(self)
+
+        def close(self):
+            self.closed = True
+
+    calls = 0
+
+    def always_timeout(navigator, seed, args, *, llm_client=None, token_budget=None):
+        nonlocal calls
+        calls += 1
+        token_budget.record(7)
+        raise benchmark.CaseTimeoutError("blocked browser operation")
+
+    monkeypatch.setattr(benchmark, "McMasterNavigator", FakeNavigator)
+    monkeypatch.setattr(benchmark, "score_seed", always_timeout)
+    args = SimpleNamespace(
+        selector="llm-schema",
+        case_timeout_seconds=0,
+        case_timeout_retries=1,
+    )
+    seed = {
+        "part_number": "A1",
+        "category": "Demo",
+        "seed_query": "demo",
+        "description": "specific demo part",
+    }
+    token_budget = benchmark.TokenBudget(100)
+    start = FakeNavigator()
+
+    result, navigator = benchmark.score_seed_with_recovery(
+        start,
+        seed,
+        args,
+        llm_client=object(),
+        token_budget=token_budget,
+    )
+
+    assert calls == 2
+    assert result["status"] == "timeout"
+    assert result["found"] is False
+    assert result["llm_tokens"] == 14
+    assert [instance.closed for instance in FakeNavigator.instances] == [True, True, False]
+    assert navigator is FakeNavigator.instances[-1]

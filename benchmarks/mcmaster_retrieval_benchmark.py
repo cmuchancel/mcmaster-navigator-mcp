@@ -5,6 +5,7 @@ import csv
 import json
 import os
 import re
+import signal
 import statistics
 import sys
 import time
@@ -99,6 +100,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--llm-max-searches", type=int, default=3)
     parser.add_argument("--llm-max-rows", type=int, default=1200)
     parser.add_argument("--llm-max-field-values", type=int, default=80)
+    parser.add_argument(
+        "--case-timeout-seconds",
+        type=float,
+        default=float(os.getenv("MCMASTER_NAV_CASE_TIMEOUT_SECONDS", "600")),
+        help="Wall-clock timeout for one scored seed. Use 0 to disable.",
+    )
+    parser.add_argument(
+        "--case-timeout-retries",
+        type=int,
+        default=int(os.getenv("MCMASTER_NAV_CASE_TIMEOUT_RETRIES", "1")),
+        help="Browser restart retries after a scored seed times out.",
+    )
     return parser.parse_args()
 
 
@@ -146,7 +159,13 @@ def main() -> None:
                 navigator.close()
                 navigator = McMasterNavigator()
             print(f"score {index}/{args.target} {part_number} [{seed['category']}]")
-            result = score_seed(navigator, seed, args, llm_client=llm_client, token_budget=token_budget)
+            result, navigator = score_seed_with_recovery(
+                navigator,
+                seed,
+                args,
+                llm_client=llm_client,
+                token_budget=token_budget,
+            )
             append_jsonl(results_path, result)
             results.append(result)
             completed.add(part_number)
@@ -237,6 +256,103 @@ def collect_seeds(
     return seeds
 
 
+class CaseTimeoutError(TimeoutError):
+    pass
+
+
+class case_timeout:
+    def __init__(self, seconds: float):
+        self.seconds = seconds
+        self._old_handler: Any = None
+        self._old_timer: tuple[float, float] | None = None
+
+    def __enter__(self) -> None:
+        if self.seconds <= 0:
+            return
+        self._old_handler = signal.getsignal(signal.SIGALRM)
+        self._old_timer = signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, self._handle_timeout)
+        signal.setitimer(signal.ITIMER_REAL, self.seconds)
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> bool:
+        if self.seconds <= 0:
+            return False
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        if self._old_handler is not None:
+            signal.signal(signal.SIGALRM, self._old_handler)
+        if self._old_timer and self._old_timer[0] > 0:
+            signal.setitimer(signal.ITIMER_REAL, *self._old_timer)
+        return False
+
+    def _handle_timeout(self, signum: int, frame: Any) -> None:
+        raise CaseTimeoutError(f"scored seed exceeded {self.seconds:g}s")
+
+
+def score_seed_with_recovery(
+    navigator: McMasterNavigator,
+    seed: dict[str, Any],
+    args: argparse.Namespace,
+    *,
+    llm_client: "OpenAIJsonClient | None" = None,
+    token_budget: "TokenBudget | None" = None,
+) -> tuple[dict[str, Any], McMasterNavigator]:
+    max_attempts = max(1, int(args.case_timeout_retries) + 1)
+    case_started = time.time()
+    usage_before = token_budget.used_tokens if token_budget is not None else 0
+    last_error = ""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with case_timeout(float(args.case_timeout_seconds)):
+                return (
+                    score_seed(navigator, seed, args, llm_client=llm_client, token_budget=token_budget),
+                    navigator,
+                )
+        except CaseTimeoutError as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            print(f"  timeout attempt {attempt}/{max_attempts}: {last_error}")
+            navigator.close()
+            navigator = McMasterNavigator()
+    return timeout_result(seed, args, last_error, time.time() - case_started, token_budget, usage_before), navigator
+
+
+def timeout_result(
+    seed: dict[str, Any],
+    args: argparse.Namespace,
+    error: str,
+    seconds: float,
+    token_budget: "TokenBudget | None",
+    usage_before: int,
+) -> dict[str, Any]:
+    result = {
+        **seed,
+        "found": False,
+        "rank": None,
+        "top1": False,
+        "top5": False,
+        "top10": False,
+        "top20": False,
+        "selected_part_number": None,
+        "returned_count": 0,
+        "returned_part_numbers": [],
+        "returned_products": [],
+        "pages_visited": [],
+        "error": error,
+        "seconds": round(seconds, 3),
+    }
+    if args.selector == "llm-schema":
+        result.update(
+            {
+                "selector": "llm-schema",
+                "status": "timeout",
+                "target_in_matches": False,
+                "filter_trace": [],
+                "llm_payloads": {},
+                "llm_tokens": (token_budget.used_tokens - usage_before) if token_budget is not None else 0,
+            }
+        )
+    return result
+
+
 def score_seed(
     navigator: McMasterNavigator,
     seed: dict[str, Any],
@@ -265,6 +381,8 @@ def score_seed(
         returned_products = result["candidates"]
         returned_parts = [product["part_number"] for product in returned_products]
         pages = result["pages_visited"]
+    except CaseTimeoutError:
+        raise
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
 
@@ -403,6 +521,8 @@ def score_seed_llm_schema(
     except BudgetExceeded as exc:
         error = f"BudgetExceeded: {exc}"
         status = "budget_exceeded"
+    except CaseTimeoutError:
+        raise
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
         status = "error"
