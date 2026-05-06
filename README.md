@@ -38,7 +38,7 @@ pip install mcmaster-navigator-mcp
 You can also send someone a built wheel:
 
 ```bash
-pip install /path/to/mcmaster_navigator_mcp-0.4.0-py3-none-any.whl
+pip install /path/to/mcmaster_navigator_mcp-0.5.0-py3-none-any.whl
 ```
 
 For local development:
@@ -221,20 +221,22 @@ reuse_browser: false
 Latest dynamic schema gate:
 
 ```text
-benchmark_runs/llm_schema_100_final7
-100/100 unique exact part recovery
-100/100 top-1 exact part recovery
-100/100 returned exactly one part
-mean lookup time: 49.800 seconds
-total runtime: 5,033.867 seconds
-categories: Building & Grounds, Electrical & Lighting, Fabricating, Fastening & Joining, Filtering, Furniture & Storage, Hand Tools, Hardware, Heating & Cooling, Lubricating, Measuring & Inspecting, Pipe Tubing Hose Fittings, Plumbing & Janitorial, Power Transmission
+benchmark_runs/llm_schema_250_general2
+250/250 unique exact part recovery
+250/250 top-1 exact part recovery
+250/250 returned exactly one part
+mean lookup time: 71.038 seconds
+median lookup time: 54.448 seconds
+p95 lookup time: 161.763 seconds
+max lookup time: 466.125 seconds
+categories: 25
 model: gpt-5.4-mini
-LLM usage: 675,918 tokens, 300 calls
-token cap: 1,600,000 for the run
+LLM usage recorded in artifacts: 1,862,490 tokens across 250 cases
 max_pages: 8
 llm_max_searches: 2
 llm_max_rows: 700
 llm_max_field_values: 160
+case_timeout_seconds: 600
 ```
 
 The benchmark intentionally includes details needed to identify one row or product option, such as material, model number, dimensions, selected option, package/each choice, and compatible manufacturer models.
