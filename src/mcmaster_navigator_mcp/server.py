@@ -205,10 +205,13 @@ def _tool_to_action(name: str) -> str:
 async def _call_worker(action: str, payload: dict[str, Any]) -> dict[str, Any]:
     loop = asyncio.get_running_loop()
     timeout = float(os.environ.get("MCMASTER_NAV_TOOL_TIMEOUT", "300"))
-    return await asyncio.wait_for(
-        loop.run_in_executor(_executor, _dispatch, action, payload),
-        timeout=timeout,
-    )
+    executor = _executor
+    future = loop.run_in_executor(executor, _dispatch, action, payload)
+    try:
+        return await asyncio.wait_for(future, timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        _replace_worker_after_timeout(executor)
+        raise TimeoutError(f"MCP tool action '{action}' exceeded {timeout:g}s; browser session was reset") from exc
 
 
 def _get_navigator() -> McMasterNavigator:
@@ -221,21 +224,20 @@ def _get_navigator() -> McMasterNavigator:
 def _dispatch(action: str, payload: dict[str, Any]) -> dict[str, Any]:
     last_error: Exception | None = None
     for attempt in range(2):
+        navigator = _get_navigator()
         try:
-            return _dispatch_once(action, payload)
+            return _dispatch_once(action, payload, navigator)
         except Exception as exc:
             last_error = exc
             if attempt == 0 and _is_recoverable_browser_error(exc):
-                _reset_navigator()
+                _reset_navigator(navigator)
                 continue
             raise
     assert last_error is not None
     raise last_error
 
 
-def _dispatch_once(action: str, payload: dict[str, Any]) -> dict[str, Any]:
-    global _navigator
-    navigator = _get_navigator()
+def _dispatch_once(action: str, payload: dict[str, Any], navigator: McMasterNavigator) -> dict[str, Any]:
     if action == "doctor":
         return navigator.doctor()
     if action == "search":
@@ -311,11 +313,22 @@ def _dispatch_once(action: str, payload: dict[str, Any]) -> dict[str, Any]:
     raise ValueError(f"Unknown action: {action}")
 
 
-def _reset_navigator() -> None:
+def _reset_navigator(expected: McMasterNavigator | None = None) -> None:
     global _navigator
-    if _navigator is not None:
-        _navigator.close()
-        _navigator = None
+    navigator = _navigator
+    if expected is not None and navigator is not expected:
+        return
+    _navigator = None
+    if navigator is not None:
+        navigator.close()
+
+
+def _replace_worker_after_timeout(executor: ThreadPoolExecutor) -> None:
+    global _executor
+    if _executor is executor:
+        _reset_navigator()
+        _executor = ThreadPoolExecutor(max_workers=1)
+    executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _is_recoverable_browser_error(exc: Exception) -> bool:
