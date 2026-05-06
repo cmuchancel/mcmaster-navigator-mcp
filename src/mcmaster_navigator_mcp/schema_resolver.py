@@ -1547,8 +1547,8 @@ CATALOG_SEMANTIC_STOPWORDS = {
     "width",
 }
 
-NULLISH_CATALOG_VALUES = {"-", "—", "–", "none", "no", "n/a", "na", "not applicable"}
-NULLISH_REQUEST_TOKENS = {"no", "none", "without", "less"}
+NULLISH_CATALOG_VALUES = {"-", "__", "—", "–", "none", "no", "n/a", "na", "not applicable"}
+NULLISH_REQUEST_TOKENS = {"blank", "no", "none", "without", "less"}
 
 
 def accepted_catalog_value_is_compatible(field: str, requested: str, accepted: str) -> bool:

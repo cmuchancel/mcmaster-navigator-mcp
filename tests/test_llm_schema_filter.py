@@ -535,6 +535,8 @@ def test_accepted_catalog_value_guard_rejects_semantic_mismatch_and_page_artifac
         assert module.accepted_catalog_value_is_compatible("attributes.Vert. Cap., lb.", "1,400 lb", "1,400") is True
         assert module.accepted_catalog_value_is_compatible("attributes.No. of Flanges", "without flanges", "—") is True
         assert module.accepted_catalog_value_is_compatible("attributes.No. of Flanges", "2 flanges", "—") is False
+        assert module.accepted_catalog_value_is_compatible("attributes.Features", "none", "__") is True
+        assert module.accepted_catalog_value_is_compatible("attributes.Features", "Filter Access Port", "__") is False
         assert module.accepted_catalog_value_is_compatible("attributes.Thread Size", '3/4"-10', artifact) is False
 
 
@@ -657,3 +659,52 @@ def test_score_seed_timeout_restarts_browser_and_records_structured_result(monke
     assert result["llm_tokens"] == 14
     assert [instance.closed for instance in FakeNavigator.instances] == [True, True, False]
     assert navigator is FakeNavigator.instances[-1]
+
+
+def test_row_description_uses_target_row_and_selected_option_scope():
+    page = SimpleNamespace(
+        title="filter cartridges | McMaster-Carr",
+        url="https://www.mcmaster.com/demo",
+        products=[],
+        schemas=[
+            {
+                "tables": [
+                    {
+                        "title": "High-Pressure Inline Filters",
+                        "rows": [
+                            {
+                                "part_number": "A1",
+                                "family": "High-Pressure Inline Filters",
+                                "groups": [],
+                                "selected_option": "Brass Housing",
+                                "attributes": {
+                                    "For Tube OD": '1/4 "',
+                                    "Features": "__",
+                                    "Brass Housing Max. Pressure, psi": "1,000",
+                                    "Brass Housing Max. Temp., °F": "300°",
+                                    "Brass Housing Each": "68.17",
+                                    "316 Stainless Steel Housing Max. Pressure, psi": "3,000",
+                                },
+                            },
+                            {
+                                "part_number": "A2",
+                                "family": "High-Pressure Inline Filters",
+                                "groups": [],
+                                "selected_option": "316 Stainless Steel Housing",
+                                "attributes": {},
+                            },
+                        ],
+                    }
+                ]
+            }
+        ],
+    )
+
+    description = benchmark.row_description_for_part(page, "A1")
+
+    assert "Selected option: Brass Housing" in description
+    assert 'For Tube OD: 1/4 "' in description
+    assert "Features: none" in description
+    assert "Brass Housing Max. Pressure, psi: 1,000" in description
+    assert "316 Stainless Steel Housing" not in description
+    assert "Each" not in description

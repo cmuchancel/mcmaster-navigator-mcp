@@ -610,7 +610,8 @@ def exact_description_from_product_page(
     except Exception:
         return ""
     title = sanitize_description_piece(page.title.replace(" | McMaster-Carr", ""), part_number)
-    pieces = [seed_query, title, listing_context]
+    row_description = row_description_for_part(page, part_number)
+    pieces = [seed_query, title, row_description or listing_context]
     cleaned = []
     seen = set()
     for piece in pieces:
@@ -623,6 +624,78 @@ def exact_description_from_product_page(
         cleaned.append(text)
         seen.add(key)
     return ". ".join(cleaned)[:500]
+
+
+def row_description_for_part(page: PageSnapshot, part_number: str) -> str:
+    target = part_number.upper()
+    all_rows = rows_from_page(page)
+    rows = [row for row in all_rows if clean_text(str(row.get("part_number", ""))).upper() == target]
+    if not rows:
+        return ""
+    rows.sort(key=row_description_score, reverse=True)
+    return "; ".join(row_description_pieces(rows[0], all_rows))[:420]
+
+
+def row_description_score(row: dict[str, Any]) -> int:
+    return len(row_description_pieces(row, [row]))
+
+
+def row_description_pieces(row: dict[str, Any], peer_rows: list[dict[str, Any]]) -> list[str]:
+    pieces: list[str] = []
+    family = clean_text(str(row.get("family") or ""))
+    if family:
+        pieces.append(f"Family: {family}")
+    for group in row.get("groups", []):
+        group_text = clean_text(str(group))
+        if group_text:
+            pieces.append(f"Group: {group_text}")
+    selected_option = clean_text(str(row.get("selected_option") or ""))
+    if selected_option:
+        pieces.append(f"Selected option: {selected_option}")
+    attributes = row.get("attributes") if isinstance(row.get("attributes"), dict) else {}
+    for key, value in attributes.items():
+        key_text = clean_text(str(key))
+        value_text = catalog_description_value(str(value))
+        if not descriptive_attribute(key_text, value_text):
+            continue
+        if not attribute_applies_to_selected_option(key_text, selected_option, peer_rows):
+            continue
+        pieces.append(f"{key_text}: {value_text}")
+    return pieces
+
+
+def descriptive_attribute(key: str, value: str) -> bool:
+    if not key or not value:
+        return False
+    key_norm = normalize_label(key)
+    value_norm = normalize(canonical_compare_text(value))
+    if key_norm in {"each", "per ft", "per foot"} or key_norm.endswith(" each"):
+        return False
+    if "price" in key_norm or value_norm.startswith("$"):
+        return False
+    return True
+
+
+def attribute_applies_to_selected_option(key: str, selected_option: str, peer_rows: list[dict[str, Any]]) -> bool:
+    if not selected_option:
+        return True
+    key_norm = normalize_label(key)
+    selected_norm = normalize_label(selected_option)
+    if key_norm.startswith(selected_norm):
+        return True
+    for row in peer_rows:
+        other_option = clean_text(str(row.get("selected_option") or ""))
+        other_norm = normalize_label(other_option)
+        if other_norm and other_norm != selected_norm and key_norm.startswith(other_norm):
+            return False
+    return True
+
+
+def catalog_description_value(value: str) -> str:
+    text = clean_text(value)
+    if catalog_value_is_nullish(text):
+        return "none"
+    return text
 
 
 def rows_from_page(page: PageSnapshot) -> list[dict[str, Any]]:
@@ -2050,8 +2123,8 @@ CATALOG_SEMANTIC_STOPWORDS = {
     "width",
 }
 
-NULLISH_CATALOG_VALUES = {"-", "—", "–", "none", "no", "n/a", "na", "not applicable"}
-NULLISH_REQUEST_TOKENS = {"no", "none", "without", "less"}
+NULLISH_CATALOG_VALUES = {"-", "__", "—", "–", "none", "no", "n/a", "na", "not applicable"}
+NULLISH_REQUEST_TOKENS = {"blank", "no", "none", "without", "less"}
 
 
 def accepted_catalog_value_is_compatible(field: str, requested: str, accepted: str) -> bool:
