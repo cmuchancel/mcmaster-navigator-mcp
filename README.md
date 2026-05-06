@@ -280,5 +280,12 @@ For dynamic schema validation with GPT:
 ```bash
 MCMASTER_NAV_SETTLE_SECONDS=2 python benchmarks/mcmaster_retrieval_benchmark.py \
   --selector llm-schema --target 10 --max-pages 8 --auto-drill-depth 2 \
-  --llm-env-file /path/to/.env --llm-token-budget 240000
+  --llm-env-file /path/to/.env --llm-token-budget 240000 \
+  --case-timeout-seconds 600 --case-timeout-retries 1
+```
+
+To regenerate paper-style metrics from any benchmark run directory:
+
+```bash
+python benchmarks/analyze_run.py benchmark_runs/llm_schema_100_final7
 ```
