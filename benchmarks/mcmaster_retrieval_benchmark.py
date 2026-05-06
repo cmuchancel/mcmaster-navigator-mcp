@@ -212,6 +212,7 @@ def collect_seeds(
                 continue
             if not is_specific_seed(product):
                 continue
+            product_hit_description = description_from_product_hit(product, snapshot.products, query)
             description = exact_description_from_product_page(
                 navigator,
                 product.part_number,
@@ -219,6 +220,9 @@ def collect_seeds(
                 product.context,
             )
             description_source = "product_page"
+            if product_hit_description and description_quality(product_hit_description) > description_quality(description):
+                description = product_hit_description
+                description_source = "product_hit_schema"
             if not description:
                 description_source = "listing"
                 description = build_description(
@@ -633,7 +637,10 @@ def row_description_for_part(page: PageSnapshot, part_number: str) -> str:
     if not rows:
         return ""
     rows.sort(key=row_description_score, reverse=True)
-    return "; ".join(row_description_pieces(rows[0], all_rows))[:420]
+    pieces = row_description_pieces(rows[0], all_rows)
+    if sum(1 for piece in pieces if not piece.startswith("Family:")) < 2:
+        return ""
+    return "; ".join(pieces)[:420]
 
 
 def row_description_score(row: dict[str, Any]) -> int:
@@ -696,6 +703,45 @@ def catalog_description_value(value: str) -> str:
     if catalog_value_is_nullish(text):
         return "none"
     return text
+
+
+def description_from_product_hit(product: Any, peer_products: list[Any], seed_query: str) -> str:
+    row = row_from_product_hit(product)
+    peer_rows = [row_from_product_hit(peer) for peer in peer_products]
+    row_pieces = row_description_pieces(row, peer_rows)
+    if sum(1 for piece in row_pieces if not piece.startswith("Family:")) < 2:
+        return ""
+    pieces = [seed_query, clean_text(str(getattr(product, "family", ""))) or clean_text(str(getattr(product, "name", ""))), "; ".join(row_pieces)]
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    part_number = clean_text(str(getattr(product, "part_number", "")))
+    for piece in pieces:
+        text = sanitize_description_piece(piece, part_number)
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        cleaned.append(text)
+        seen.add(key)
+    return ". ".join(cleaned)[:500]
+
+
+def row_from_product_hit(product: Any) -> dict[str, Any]:
+    return {
+        "part_number": clean_text(str(getattr(product, "part_number", ""))).upper(),
+        "family": clean_text(str(getattr(product, "family", ""))),
+        "groups": list(getattr(product, "groups", []) or []),
+        "selected_option": clean_text(str(getattr(product, "selected_option", ""))),
+        "attributes": dict(getattr(product, "attributes", {}) or {}),
+    }
+
+
+def description_quality(description: str) -> int:
+    text = clean_text(description)
+    if not text:
+        return 0
+    return text.count(":") * 4 + len(re.findall(r"\d", text)) + min(len(text.split()), 80)
 
 
 def rows_from_page(page: PageSnapshot) -> list[dict[str, Any]]:
