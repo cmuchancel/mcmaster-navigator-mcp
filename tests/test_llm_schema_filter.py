@@ -708,3 +708,15 @@ def test_row_description_uses_target_row_and_selected_option_scope():
     assert "Brass Housing Max. Pressure, psi: 1,000" in description
     assert "316 Stainless Steel Housing" not in description
     assert "Each" not in description
+
+
+def test_unique_candidate_verification_requires_match_and_no_missing_constraints():
+    assert schema_resolver.verification_accepts_unique_candidate(
+        {"matches": True, "missing_or_contradicted_constraints": []}
+    ) is True
+    assert schema_resolver.verification_accepts_unique_candidate(
+        {"matches": False, "missing_or_contradicted_constraints": ["material unobtainium"]}
+    ) is False
+    assert schema_resolver.verification_accepts_unique_candidate(
+        {"matches": True, "missing_or_contradicted_constraints": ["color transparent magenta plaid"]}
+    ) is False

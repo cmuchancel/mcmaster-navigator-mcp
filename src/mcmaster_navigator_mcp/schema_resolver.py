@@ -233,6 +233,31 @@ def resolve_exact_part_dynamic(
         if len(returned_parts) == 1:
             status = "unique"
             selected_part_number = returned_parts[0]
+            verification = llm_verify_unique_candidate(
+                client,
+                description=description,
+                normalized=normalized,
+                selected_row=matches[0],
+                filter_trace=filter_trace,
+            )
+            llm_payloads["verification"] = verification
+            if not verification_accepts_unique_candidate(verification):
+                filter_trace.append(
+                    {
+                        "constraint": "unique candidate verification",
+                        "field": "metadata.final_verification",
+                        "value": clean_text(str(verification.get("reason") or "")),
+                        "comparator": "llm_strict_satisfaction_check",
+                        "accepted_values": [],
+                        "before_unique_parts": 1,
+                        "after_unique_parts": 0,
+                        "missing_or_contradicted_constraints": verification.get("missing_or_contradicted_constraints", []),
+                    }
+                )
+                matches = []
+                returned_parts = []
+                selected_part_number = None
+                status = "unresolved"
         elif len(returned_parts) > 1:
             status = "ambiguous"
         else:
@@ -1086,6 +1111,61 @@ def llm_repair_matchers_from_live_schema(
     if not isinstance(result, dict):
         raise RuntimeError("LLM repair returned non-object JSON")
     return repair_matcher_output(result, field_values)
+
+
+def llm_verify_unique_candidate(
+    client: OpenAIJsonClient,
+    *,
+    description: str,
+    normalized: dict[str, Any],
+    selected_row: dict[str, Any],
+    filter_trace: list[dict[str, Any]],
+) -> dict[str, Any]:
+    system = (
+        "You are a strict verifier for supplier catalog part matching. "
+        "Given a user part description and one live catalog row, decide whether the row satisfies every required constraint. "
+        "If any required constraint is absent, contradicted, impossible, or only matched by ignoring an ungrounded value, return matches=false. "
+        "Do not infer from outside the supplied row. Return only JSON."
+    )
+    user = json.dumps(
+        {
+            "task": "Verify whether the selected live catalog row satisfies the complete requested description.",
+            "description": description,
+            "normalized_constraints": normalized.get("constraints", []),
+            "selected_row": row_result(selected_row),
+            "filter_trace": filter_trace,
+            "output_schema": {
+                "matches": True,
+                "missing_or_contradicted_constraints": ["required constraint not satisfied by selected_row"],
+                "reason": "short explanation",
+            },
+            "rules": [
+                "Treat constraints marked required=true as mandatory.",
+                "If the description says only return a part when every required exact constraint is present, enforce that literally.",
+                "A row does not satisfy a requested material, color, dimension, rating, option, or count unless that value appears in the selected row or is a clear unit/name equivalent.",
+                "Skipped matchers with empty accepted_values are evidence that a requested value was not grounded; reject if that value is required by the description.",
+                "For underspecified descriptions, do not reject just because many other rows may also match; this verifier only checks whether this one row satisfies the stated constraints.",
+            ],
+        },
+        ensure_ascii=True,
+    )
+    result = client.complete_json(system, user, max_completion_tokens=1000)
+    if not isinstance(result, dict):
+        raise RuntimeError("LLM verifier returned non-object JSON")
+    missing = [
+        clean_text(str(item))
+        for item in result.get("missing_or_contradicted_constraints", [])
+        if clean_text(str(item))
+    ]
+    return {
+        "matches": bool(result.get("matches")),
+        "missing_or_contradicted_constraints": missing,
+        "reason": clean_text(str(result.get("reason") or "")),
+    }
+
+
+def verification_accepts_unique_candidate(verification: dict[str, Any]) -> bool:
+    return bool(verification.get("matches")) and not verification.get("missing_or_contradicted_constraints")
 
 
 def normalize_matcher_output(result: dict[str, Any], clean_matchers: list[dict[str, Any]], field_values: dict[str, list[str]]) -> dict[str, Any]:
