@@ -722,6 +722,18 @@ def test_unique_candidate_verification_requires_match_and_no_missing_constraints
     ) is False
 
 
+def test_unmapped_judgement_requires_unresolved_and_fatal_constraints():
+    assert schema_resolver.unmapped_judgement_forces_unresolved(
+        {"unresolved": True, "fatal_constraints": ["material unobtainium"]}
+    ) is True
+    assert schema_resolver.unmapped_judgement_forces_unresolved(
+        {"unresolved": True, "fatal_constraints": []}
+    ) is False
+    assert schema_resolver.unmapped_judgement_forces_unresolved(
+        {"unresolved": False, "fatal_constraints": ["duplicate group label"]}
+    ) is False
+
+
 def test_broad_family_only_request_stays_ambiguous_after_accidental_unique_filter():
     rows = [
         {"part_number": "2498N11", "family": "Welding Clamps", "groups": ["Fixed Jaw"], "attributes": {}},

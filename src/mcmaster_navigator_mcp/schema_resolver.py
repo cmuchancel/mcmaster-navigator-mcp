@@ -237,6 +237,34 @@ def resolve_exact_part_dynamic(
         )
         if ambiguity_trace:
             filter_trace.append(ambiguity_trace)
+        forced_unresolved = False
+        if len(returned_parts) > 1 and mapped.get("unmapped_constraints"):
+            unmapped_judgement = llm_judge_unmapped_constraints(
+                client,
+                description=description,
+                normalized=normalized,
+                mapped=mapped,
+                sample_rows=matches[:12],
+            )
+            llm_payloads["unmapped_judgement"] = unmapped_judgement
+            if unmapped_judgement_forces_unresolved(unmapped_judgement):
+                filter_trace.append(
+                    {
+                        "constraint": "unmapped required constraints",
+                        "field": "metadata.unmapped_constraints",
+                        "value": clean_text(str(unmapped_judgement.get("reason") or "")),
+                        "comparator": "llm_required_constraint_grounding_check",
+                        "accepted_values": [],
+                        "before_unique_parts": len(returned_parts),
+                        "after_unique_parts": 0,
+                        "fatal_constraints": unmapped_judgement.get("fatal_constraints", []),
+                    }
+                )
+                matches = []
+                returned_parts = []
+                selected_part_number = None
+                status = "unresolved"
+                forced_unresolved = True
         if len(returned_parts) == 1:
             status = "unique"
             selected_part_number = returned_parts[0]
@@ -267,7 +295,7 @@ def resolve_exact_part_dynamic(
                 status = "unresolved"
         elif len(returned_parts) > 1:
             status = "ambiguous"
-        else:
+        elif not forced_unresolved:
             status = "unresolved"
     except BudgetExceeded as exc:
         status = "budget_exceeded"
@@ -1229,6 +1257,60 @@ def llm_verify_unique_candidate(
 
 def verification_accepts_unique_candidate(verification: dict[str, Any]) -> bool:
     return bool(verification.get("matches")) and not verification.get("missing_or_contradicted_constraints")
+
+
+def llm_judge_unmapped_constraints(
+    client: OpenAIJsonClient,
+    *,
+    description: str,
+    normalized: dict[str, Any],
+    mapped: dict[str, Any],
+    sample_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    system = (
+        "You are a strict catalog matching judge. A resolver found multiple live catalog candidates, "
+        "but some requested constraints were not mapped to live schema fields. Decide whether those unmapped "
+        "constraints are mandatory requirements that make every candidate unresolved. Return only JSON."
+    )
+    user = json.dumps(
+        {
+            "task": "Decide whether unmapped constraints should force status=unresolved instead of ambiguous.",
+            "description": description,
+            "normalized_constraints": normalized.get("constraints", []),
+            "mapped_matchers": mapped.get("matchers", []),
+            "unmapped_constraints": mapped.get("unmapped_constraints", []),
+            "sample_candidate_rows": [row_result(row) for row in sample_rows],
+            "output_schema": {
+                "unresolved": True,
+                "fatal_constraints": ["mandatory requested constraint not grounded or contradicted by live rows"],
+                "reason": "short explanation",
+            },
+            "rules": [
+                "Return unresolved=true only when an unmapped constraint is a mandatory user requirement and no supplied row shows that requirement.",
+                "Return unresolved=false when the unmapped item is merely a duplicate family/group label, optional context, a value already represented by mapped_matchers, or a harmless unavailable column such as a blank spec.",
+                "If the user explicitly says only to return a part when every exact requirement is present, missing required constraints are fatal.",
+                "Do not reject because the query is broad; broad underspecified queries should remain ambiguous.",
+            ],
+        },
+        ensure_ascii=True,
+    )
+    result = client.complete_json(system, user, max_completion_tokens=900)
+    if not isinstance(result, dict):
+        raise RuntimeError("LLM unmapped-constraint judge returned non-object JSON")
+    fatal_constraints = [
+        clean_text(str(item))
+        for item in result.get("fatal_constraints", [])
+        if clean_text(str(item))
+    ]
+    return {
+        "unresolved": bool(result.get("unresolved")),
+        "fatal_constraints": fatal_constraints,
+        "reason": clean_text(str(result.get("reason") or "")),
+    }
+
+
+def unmapped_judgement_forces_unresolved(judgement: dict[str, Any]) -> bool:
+    return bool(judgement.get("unresolved")) and bool(judgement.get("fatal_constraints"))
 
 
 def normalize_matcher_output(result: dict[str, Any], clean_matchers: list[dict[str, Any]], field_values: dict[str, list[str]]) -> dict[str, Any]:
