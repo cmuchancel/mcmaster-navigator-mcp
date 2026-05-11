@@ -10,3 +10,6 @@ build/
 .ruff_cache/
 downloaded_files/
 benchmark_runs/
+.env
+.env.*
+!.env.example

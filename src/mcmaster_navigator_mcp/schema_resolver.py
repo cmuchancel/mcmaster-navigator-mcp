@@ -14,6 +14,14 @@ from .models import PageSnapshot
 from .navigator import McMasterNavigator, _order_links_for_query
 from .catalog_text import CATALOG_SEMANTIC_STOPWORDS, derive_search_queries, normalize, term_matches
 
+# Keep public MCP setup simple: normal users only set OPENAI_API_KEY.
+# Research scripts can pass explicit budgets/model names to resolve_exact_part_dynamic().
+DEFAULT_OPENAI_MODEL = "gpt-5.4-mini"
+DEFAULT_TOKEN_BUDGET = 2_500_000
+DEFAULT_MAX_SEARCHES = 2
+DEFAULT_MAX_ROWS = 700
+DEFAULT_MAX_FIELD_VALUES = 160
+
 LITERAL_IDENTIFIER_RE = re.compile(
     r"\b(?=[A-Z0-9./-]{5,}\b)(?=[A-Z0-9./-]*\d)"
     r"(?:[A-Z]+\d[A-Z0-9./-]*|\d+[A-Z][A-Z0-9./-]*|\d+(?:[-/][A-Z0-9]+)+|[A-Z0-9]+(?:[-/][A-Z0-9]+)+)\b",
@@ -141,12 +149,18 @@ def resolve_exact_part_dynamic(
     max_candidates: int = 10,
     max_pages: int = 8,
     auto_drill_depth: int | None = None,
+    model: str = DEFAULT_OPENAI_MODEL,
+    token_budget_limit: int = DEFAULT_TOKEN_BUDGET,
+    max_searches: int = DEFAULT_MAX_SEARCHES,
+    max_rows: int = DEFAULT_MAX_ROWS,
+    max_field_values: int = DEFAULT_MAX_FIELD_VALUES,
 ) -> dict[str, Any]:
+    """Resolve a text description by filtering live McMaster rows, not ranking products."""
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is required for dynamic schema resolution")
-    model = os.environ.get("MCMASTER_NAV_LLM_MODEL") or os.environ.get("FUSION_LLM_MODEL") or "gpt-5.4-mini"
-    token_budget = TokenBudget(int(os.environ.get("MCMASTER_NAV_LLM_TOKEN_BUDGET", "2500000")))
+    model = (model or DEFAULT_OPENAI_MODEL).strip()
+    token_budget = TokenBudget(token_budget_limit)
     client = OpenAIJsonClient(api_key=api_key, model=model, budget=token_budget)
     started = time.time()
     llm_payloads: dict[str, Any] = {}
@@ -161,7 +175,6 @@ def resolve_exact_part_dynamic(
     try:
         normalized = llm_extract_search_and_constraints(client, description)
         llm_payloads["normalized"] = normalized
-        max_searches = int(os.environ.get("MCMASTER_NAV_LLM_MAX_SEARCHES", "2"))
         if search_query:
             search_queries = [search_query]
             for query in schema_search_queries(description, normalized, limit=max_searches):
@@ -179,9 +192,9 @@ def resolve_exact_part_dynamic(
             search_queries=search_queries,
             max_pages=max_pages,
             auto_drill_depth=auto_drill_depth,
-            max_rows=int(os.environ.get("MCMASTER_NAV_LLM_MAX_ROWS", "700")),
+            max_rows=max_rows,
         )
-        field_summary = summarize_dynamic_fields(rows, max_values=int(os.environ.get("MCMASTER_NAV_LLM_MAX_FIELD_VALUES", "160")))
+        field_summary = summarize_dynamic_fields(rows, max_values=max_field_values)
         llm_payloads["field_summary"] = field_summary
         mapped = llm_map_constraints_to_schema(
             client,
@@ -194,7 +207,7 @@ def resolve_exact_part_dynamic(
             description=description,
             matchers=mapped.get("matchers", []),
             rows=rows,
-            max_values=int(os.environ.get("MCMASTER_NAV_LLM_MAX_FIELD_VALUES", "160")),
+            max_values=max_field_values,
         )
         mapped["matchers"] = value_normalization.get("matchers", mapped.get("matchers", []))
         mapped["matchers"] = apply_explicit_label_values(description, mapped.get("matchers", []), rows)
@@ -216,7 +229,7 @@ def resolve_exact_part_dynamic(
                 field_summary=field_summary,
                 rows=rows,
                 filter_trace=filter_trace,
-                max_values=int(os.environ.get("MCMASTER_NAV_LLM_MAX_FIELD_VALUES", "160")),
+                max_values=max_field_values,
             )
             llm_payloads["repair"] = repair
             repaired_matchers = repair.get("matchers", [])
@@ -329,6 +342,9 @@ def resolve_exact_part_dynamic(
             "max_candidates": max_candidates,
             "max_pages": max_pages,
             "auto_drill_depth": auto_drill_depth,
+            "max_searches": max_searches,
+            "max_rows": max_rows,
+            "max_field_values": max_field_values,
             "llm_usage": token_budget.to_dict(),
             "error": error,
             "seconds": round(time.time() - started, 3),

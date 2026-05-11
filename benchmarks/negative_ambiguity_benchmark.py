@@ -19,7 +19,7 @@ if str(SRC) not in sys.path:
 
 from mcmaster_navigator_mcp.extract import clean_text
 from mcmaster_navigator_mcp.navigator import McMasterNavigator
-from mcmaster_navigator_mcp.schema_resolver import resolve_exact_part_dynamic
+from mcmaster_navigator_mcp.schema_resolver import DEFAULT_OPENAI_MODEL, resolve_exact_part_dynamic
 
 
 IMPOSSIBLE_REQUIREMENTS = (
@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--auto-drill-depth", type=int, default=2)
     parser.add_argument("--max-candidates", type=int, default=50)
     parser.add_argument("--llm-env-file", type=Path, action="append", default=[])
-    parser.add_argument("--llm-model", default="")
+    parser.add_argument("--llm-model", default=DEFAULT_OPENAI_MODEL)
     parser.add_argument("--llm-max-searches", type=int, default=2)
     parser.add_argument("--llm-max-rows", type=int, default=700)
     parser.add_argument("--llm-max-field-values", type=int, default=160)
@@ -63,12 +63,6 @@ def main() -> None:
     args = parse_args()
     for env_file in args.llm_env_file:
         load_env_file(env_file)
-    if args.llm_model:
-        os.environ["MCMASTER_NAV_LLM_MODEL"] = args.llm_model
-    os.environ["MCMASTER_NAV_LLM_MAX_SEARCHES"] = str(args.llm_max_searches)
-    os.environ["MCMASTER_NAV_LLM_MAX_ROWS"] = str(args.llm_max_rows)
-    os.environ["MCMASTER_NAV_LLM_MAX_FIELD_VALUES"] = str(args.llm_max_field_values)
-    os.environ["MCMASTER_NAV_LLM_TOKEN_BUDGET"] = str(args.llm_call_token_budget)
 
     run_dir = args.run_dir or ROOT / "benchmark_runs" / datetime.now(timezone.utc).strftime("negative_ambiguity_%Y%m%dT%H%M%SZ")
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -206,6 +200,11 @@ def score_case(navigator: McMasterNavigator, case: dict[str, Any], args: argpars
                 max_candidates=args.max_candidates,
                 max_pages=args.max_pages,
                 auto_drill_depth=args.auto_drill_depth,
+                model=args.llm_model,
+                token_budget_limit=args.llm_call_token_budget,
+                max_searches=args.llm_max_searches,
+                max_rows=args.llm_max_rows,
+                max_field_values=args.llm_max_field_values,
             )
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
@@ -418,7 +417,7 @@ def summarize(results: list[dict[str, Any]], cases: list[dict[str, Any]], *, tot
             "max_pages": args.max_pages,
             "auto_drill_depth": args.auto_drill_depth,
             "max_candidates": args.max_candidates,
-            "llm_model": os.getenv("MCMASTER_NAV_LLM_MODEL") or os.getenv("FUSION_LLM_MODEL"),
+            "llm_model": args.llm_model,
             "llm_max_searches": args.llm_max_searches,
             "llm_max_rows": args.llm_max_rows,
             "llm_max_field_values": args.llm_max_field_values,

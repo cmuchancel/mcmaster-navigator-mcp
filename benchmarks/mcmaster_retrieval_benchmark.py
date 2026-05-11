@@ -28,6 +28,7 @@ from mcmaster_navigator_mcp.extract import PART_RE, clean_text
 from mcmaster_navigator_mcp.models import PageSnapshot
 from mcmaster_navigator_mcp.catalog_text import derive_search_queries, normalize, term_matches
 from mcmaster_navigator_mcp.navigator import McMasterNavigator, _order_links_for_query
+from mcmaster_navigator_mcp.schema_resolver import DEFAULT_OPENAI_MODEL
 
 LITERAL_IDENTIFIER_RE = re.compile(
     r"\b(?=[A-Z0-9./-]{5,}\b)(?=[A-Z0-9./-]*\d)"
@@ -94,7 +95,7 @@ def parse_args() -> argparse.Namespace:
         default="llm-schema",
         help="Use the schema-driven LLM constraint filter.",
     )
-    parser.add_argument("--llm-model", default="")
+    parser.add_argument("--llm-model", default=DEFAULT_OPENAI_MODEL)
     parser.add_argument("--llm-env-file", type=Path, action="append", default=[])
     parser.add_argument("--llm-token-budget", type=int, default=2_500_000)
     parser.add_argument("--llm-max-searches", type=int, default=3)
@@ -124,7 +125,7 @@ def main() -> None:
     llm_client = None
     token_budget = None
     if args.selector == "llm-schema":
-        model = args.llm_model or os.getenv("OPENAI_MODEL") or os.getenv("FUSION_LLM_MODEL") or "gpt-5.4-mini"
+        model = args.llm_model or DEFAULT_OPENAI_MODEL
         api_key = os.getenv("OPENAI_API_KEY", "")
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is required for --selector llm-schema")
@@ -2401,7 +2402,7 @@ def summarize(
             "auto_drill_depth": args.auto_drill_depth,
             "seed_depth": args.seed_depth,
             "reuse_browser": args.reuse_browser,
-            "llm_model": args.llm_model or os.getenv("OPENAI_MODEL") or os.getenv("FUSION_LLM_MODEL") or None,
+            "llm_model": args.llm_model,
             "llm_token_budget": args.llm_token_budget if args.selector == "llm-schema" else None,
             "llm_max_searches": args.llm_max_searches if args.selector == "llm-schema" else None,
             "llm_max_rows": args.llm_max_rows if args.selector == "llm-schema" else None,
