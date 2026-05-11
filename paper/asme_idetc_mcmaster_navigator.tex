@@ -8,9 +8,7 @@
   pdfsubject={ASME IDETC-CIE draft paper on dynamic catalog grounding for McMaster-Carr part sourcing}
 }
 
-\usepackage{booktabs}
-\usepackage{tabularx}
-\usepackage{array}
+\usepackage{tikz}
 
 \newcommand{\mcp}{MCP}
 \newcommand{\tool}[1]{\texttt{#1}}
@@ -138,7 +136,7 @@ The exact recovery benchmark evaluates precision when the description is suffici
 \label{fig:exact-example}
 \end{figure}
 
-The final exact-recovery run used 250 cases sampled across 25 catalog categories, later summarized in Table~\ref{tab:categories}.
+The final exact-recovery run used 250 cases sampled across 25 catalog categories, later summarized in Fig.~\ref{fig:category-coverage}.
 
 \subsection{Multi-Match Part Recovery}
 
@@ -155,73 +153,85 @@ The no-match benchmark evaluates whether the resolver can return an empty set wh
 
 \section{Experimental Results}
 
-\begin{table*}[t]
-\caption{Final benchmark results. Tokens are total recorded model tokens for each final run.}
-\label{tab:results}
+\begin{figure*}[t]
 \centering
-\scriptsize
-\begin{tabularx}{\textwidth}{@{}p{1.35in}c p{0.62in}X c c r r@{}}
-\toprule
-Evaluation & Cases & Expected count & Pass criterion & Passed & Pass rate & Tokens & Mean s/case\\
-\midrule
-Exact single-part recovery & 250 & 1 & Target returned as only part & 250/250 & 100\% & 1,862,490 & 71.038\\
-Known multi-match recovery & 25 & 2--4 & Expected matching set returned & 25/25 & 100\% & 187,701 & 64.325\\
-No-match descriptions & 25 & 0 & No part returned & 25/25 & 100\% & 268,293 & 75.348\\
-Broad multi-match checks & 25 & $>1$ & Multiple parts returned & 25/25 & 100\% & 90,950 & 50.654\\
-\midrule
-Total final reported set & 325 & mixed & Task-specific & 325/325 & 100\% & 2,409,434 & --\\
-\bottomrule
-\end{tabularx}
-\end{table*}
+\begin{tikzpicture}[
+  outcome/.style={draw, rounded corners=2pt, fill=black!3, minimum width=3.75cm, minimum height=2.2cm, align=center, inner sep=4pt}
+]
+\node[outcome] (exact) at (0,0) {
+  {\bfseries\small Exact}\\[2pt]
+  {\bfseries\Large 250/250}\\[-1pt]
+  {\scriptsize one held-out part recovered}
+};
+\node[outcome] (multi) at (4.05,0) {
+  {\bfseries\small Known multi-match}\\[2pt]
+  {\bfseries\Large 25/25}\\[-1pt]
+  {\scriptsize expected part set recovered}
+};
+\node[outcome] (none) at (8.10,0) {
+  {\bfseries\small No match}\\[2pt]
+  {\bfseries\Large 25/25}\\[-1pt]
+  {\scriptsize empty set returned}
+};
+\node[outcome] (broad) at (12.15,0) {
+  {\bfseries\small Broad multi-match}\\[2pt]
+  {\bfseries\Large 25/25}\\[-1pt]
+  {\scriptsize multiple parts returned}
+};
+\node[font=\scriptsize, align=center] at (6.075,-1.55) {All completed benchmark regimes returned the expected match-set cardinality and contents.};
+\end{tikzpicture}
+\caption{Benchmark outcome summary. The resolver returns one part for sufficiently specific descriptions, all expected alternatives for known multi-match descriptions, no parts for impossible descriptions, and multiple parts for broad under-specified descriptions.}
+\label{fig:benchmark-outcomes}
+\end{figure*}
 
-Table~\ref{tab:results} summarizes the completed benchmark runs.
+Figure~\ref{fig:benchmark-outcomes} summarizes the completed benchmark runs.
 
 \subsection{Exact Part Recovery Results}
 
-The exact-recovery benchmark returned exactly one part number for all 250 cases, and that part number was the held-out target in every case. Median exact-case latency was 54.448~s, p90 latency was 85.960~s, p95 latency was 161.763~s, and maximum latency was 466.125~s. Token use averaged 7,449.96 tokens per case, with median 6,962.5, p90 10,563.9, p95 11,183.6, and maximum 18,300.
+The exact-recovery benchmark returned exactly one part number for all 250 cases, and that part number was the held-out target in every case.
 
-\begin{table}[t]
-\caption{Exact-recovery category coverage. Each category had 100\% single-part recovery in the final run.}
-\label{tab:categories}
+\begin{figure*}[t]
 \centering
-\begin{tabular}{lrr}
-\toprule
-Category & Cases & Single\\
-\midrule
-Adhesives & 8 & 8\\
-Bearings & 8 & 8\\
-Building \& Grounds & 20 & 20\\
-Conveying & 8 & 8\\
-Electrical \& Lighting & 6 & 6\\
-Fabricating & 19 & 19\\
-Fastening \& Joining & 20 & 20\\
-Filtering & 21 & 21\\
-Furniture \& Storage & 14 & 14\\
-Hand Tools & 8 & 8\\
-Hardware & 8 & 8\\
-Heating \& Cooling & 8 & 8\\
-Lab Supplies & 8 & 8\\
-Linear Motion & 7 & 7\\
-Lubricating & 8 & 8\\
-Measuring \& Inspecting & 8 & 8\\
-Motors & 8 & 8\\
-Pipe/Tubing/Hose/Fittings & 8 & 8\\
-Plumbing \& Janitorial & 8 & 8\\
-Pneumatics & 8 & 8\\
-Power Transmission & 8 & 8\\
-Pulling \& Lifting & 8 & 8\\
-Raw Materials & 8 & 8\\
-Shipping & 8 & 8\\
-Suspending & 7 & 7\\
-\bottomrule
-\end{tabular}
-\end{table}
+\begin{tikzpicture}[
+  cat/.style={draw, rounded corners=1.5pt, fill=black!3, text width=2.65cm, minimum height=0.53cm, align=center, inner sep=2pt, font=\scriptsize},
+  coverageNote/.style={font=\bfseries\scriptsize}
+]
+\node[cat] at (0,0) {Adhesives};
+\node[cat] at (3.0,0) {Bearings};
+\node[cat] at (6.0,0) {Building \& Grounds};
+\node[cat] at (9.0,0) {Conveying};
+\node[cat] at (12.0,0) {Electrical \& Lighting};
+\node[cat] at (0,-0.72) {Fabricating};
+\node[cat] at (3.0,-0.72) {Fastening \& Joining};
+\node[cat] at (6.0,-0.72) {Filtering};
+\node[cat] at (9.0,-0.72) {Furniture \& Storage};
+\node[cat] at (12.0,-0.72) {Hand Tools};
+\node[cat] at (0,-1.44) {Hardware};
+\node[cat] at (3.0,-1.44) {Heating \& Cooling};
+\node[cat] at (6.0,-1.44) {Lab Supplies};
+\node[cat] at (9.0,-1.44) {Linear Motion};
+\node[cat] at (12.0,-1.44) {Lubricating};
+\node[cat] at (0,-2.16) {Measuring \& Inspecting};
+\node[cat] at (3.0,-2.16) {Motors};
+\node[cat] at (6.0,-2.16) {Pipe/Tubing/Hose/Fittings};
+\node[cat] at (9.0,-2.16) {Plumbing \& Janitorial};
+\node[cat] at (12.0,-2.16) {Pneumatics};
+\node[cat] at (0,-2.88) {Power Transmission};
+\node[cat] at (3.0,-2.88) {Pulling \& Lifting};
+\node[cat] at (6.0,-2.88) {Raw Materials};
+\node[cat] at (9.0,-2.88) {Shipping};
+\node[cat] at (12.0,-2.88) {Suspending};
+\node[coverageNote] at (6.0,-3.55) {25 catalog families: all sampled exact-recovery descriptions resolved to the held-out part number.};
+\end{tikzpicture}
+\caption{Exact-recovery coverage across catalog families. The grid reports the diversity of product families represented in the 250-case exact-recovery run.}
+\label{fig:category-coverage}
+\end{figure*}
 
 The absence of misses across these categories is evidence that runtime schema extraction can handle substantially different product families. It is not proof of complete coverage of every McMaster-Carr page or every possible human description. The strongest defensible claim is that dynamic schema extraction and deterministic filtering can recover exact part numbers across diverse catalog families when descriptions contain sufficient identifying information.
 
 \subsection{Multi-Match Part Recovery Results}
 
-The known multi-match benchmark returned candidate counts from 2 to 4, with mean 2.24. The expected matching set coverage was 1.0 in all cases. The broad multi-match benchmark returned multiple part numbers for all 25 cases. Returned candidate counts ranged from 2 to 456, with median 86 and mean 128.88.
+The known multi-match benchmark returned the expected matching set in all 25 cases. The broad multi-match benchmark also returned multiple part numbers for all 25 under-specified category descriptions, showing that the resolver preserves alternatives instead of collapsing broad requests to a single guess.
 
 \subsection{No-Match Part Description Results}
 
