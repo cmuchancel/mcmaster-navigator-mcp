@@ -4,8 +4,8 @@ from mcmaster_navigator_mcp.extract import (
     search_url,
     snapshot_from_html,
 )
-from mcmaster_navigator_mcp.models import FindPartsResult, ProductHit
-from mcmaster_navigator_mcp.rank import derive_search_queries, derive_search_query, rank_products
+from mcmaster_navigator_mcp.models import FindPartsResult
+from mcmaster_navigator_mcp.catalog_text import derive_search_queries, derive_search_query
 
 
 def test_normalize_target_handles_part_paths_and_queries():
@@ -48,7 +48,7 @@ def test_snapshot_extracts_products_and_prioritizes_content_links():
     assert snapshot.links[1].kind == "product"
 
 
-def test_mcmaster_family_links_rank_before_filter_links():
+def test_mcmaster_family_links_order_before_filter_links():
     html = """
     <html>
       <body>
@@ -80,28 +80,6 @@ def test_find_parts_result_uses_compact_page_summaries():
     assert result["pages_visited"][0]["link_count"] == 2
     assert "links" not in result["pages_visited"][0]
     assert "text_preview" not in result["pages_visited"][0]
-
-
-def test_exact_part_ranking_prefers_matching_row_context():
-    html = """
-    <html>
-      <head><title>Stainless Steel Socket Head Screws | McMaster-Carr</title></head>
-      <body>
-        <table>
-          <tr><td>M14 x 2 mm</td><td>25 mm</td><td>Fully Threaded</td><td><a href="/90696A101">90696A101</a></td></tr>
-          <tr><td>M16 x 2 mm</td><td>40 mm</td><td>Partially Threaded</td><td><a href="/90696A155">90696A155</a></td></tr>
-        </table>
-      </body>
-    </html>
-    """
-    snapshot = snapshot_from_html(html, "https://www.mcmaster.com/stainless-steel-socket-head-screws/")
-    ranked = rank_products(
-        "stainless steel socket head screw M14 x 2 mm 25 mm fully threaded",
-        snapshot.products,
-        page_title=snapshot.title,
-    )
-
-    assert ranked[0].product.part_number == "90696A101"
 
 
 def test_derive_search_query_uses_family_phrase_not_specs():
@@ -148,31 +126,6 @@ def test_derive_search_queries_adds_catalog_friendly_spring_plural():
     assert "music wire springs" in queries
 
 
-def test_field_aware_ranking_keeps_numbers_in_the_right_column():
-    html = """
-    <html>
-      <head><title>Surface-Mount Hinges with Holes | McMaster-Carr</title></head>
-      <body>
-        <table>
-          <thead>
-            <tr><th>Door Leaf Ht.</th><th>Door Leaf Wd.</th><th>Overall Wd.</th><th></th></tr>
-          </thead>
-          <tr><td>6"</td><td>3/4"</td><td>1 1/2"</td><td><a href="/1586A12">1586A12</a></td></tr>
-          <tr><td>6"</td><td>1 1/2"</td><td>3"</td><td><a href="/1586A21">1586A21</a></td></tr>
-        </table>
-      </body>
-    </html>
-    """
-    snapshot = snapshot_from_html(html, "https://www.mcmaster.com/door-hinges/")
-    ranked = rank_products(
-        "Surface-mount hinge with holes, removable pin, 6 inch x 1-1/2 inch door leaf",
-        snapshot.products,
-        page_title=snapshot.title,
-    )
-
-    assert ranked[0].product.part_number == "1586A21"
-
-
 def test_table_row_context_includes_stack_pivot_groups_for_exact_specs():
     html = """
     <html>
@@ -197,15 +150,6 @@ def test_table_row_context_includes_stack_pivot_groups_for_exact_specs():
 
     assert "Group: 18-8 Stainless Steel" in by_part["90696A101"].context
     assert "Group: M14 x 2 mm" in by_part["90696A101"].context
-
-    ranked = rank_products(
-        "18-8 stainless steel socket head screw M14 x 2 mm thread 25 mm long pack of 5",
-        snapshot.products,
-        page_title=snapshot.title,
-    )
-
-    assert ranked[0].product.part_number == "90696A101"
-
 
 def test_snapshot_exposes_dynamic_table_schema_and_row_attributes():
     html = """
@@ -339,87 +283,3 @@ def test_schema_extracts_linked_option_variants_as_dynamic_attributes():
     assert rows["7343K184"]["attributes"]["No. of Terminals"] == "2"
     assert rows["7343K185"]["attributes"]["Choose a Wire Connection"] == "Quick-Disconnect Terminal"
     assert rows["7343K186"]["attributes"]["Choose a Wire Connection"] == "Screw Terminal"
-
-
-def test_field_scoped_ranking_keeps_same_dimension_in_same_field():
-    html = """
-    <html>
-      <head><title>Surface-Mount Hinges with Holes | McMaster-Carr</title></head>
-      <body>
-        <table>
-          <thead>
-            <tr><th>Door Leaf Ht.</th><th>Door Leaf Wd.</th><th>Overall Wd.</th><th></th></tr>
-          </thead>
-          <tr><td>6"</td><td>3/4"</td><td>1 1/2"</td><td><a href="/1586A31">1586A31</a></td></tr>
-          <tr><td>6"</td><td>1 1/2"</td><td>3"</td><td><a href="/1586A33">1586A33</a></td></tr>
-        </table>
-      </body>
-    </html>
-    """
-    snapshot = snapshot_from_html(html, "https://www.mcmaster.com/door-hinges/")
-    by_part = {product.part_number: product for product in snapshot.products}
-    by_part["1586A31"].name = 'Surface-Mount Hinge with Holes, Dull 304 Stainless Steel, Nonremovable Pin, 6" x 3/4" Door Leaf'
-    by_part["1586A31"].sources.append("product_page")
-    by_part["1586A33"].name = 'Surface-Mount Hinge with Holes, Dull 304 Stainless Steel, Nonremovable Pin, 6" x 1-1/2" Door Leaf'
-    by_part["1586A33"].sources.append("product_page")
-    ranked = rank_products(
-        'door hinges. Surface-Mount Hinge with Holes, Dull 304 Stainless Steel, Nonremovable Pin, 6" x 3/4" Door Leaf. Door Leaf Ht.: 6"; Door Leaf Wd.: 3/4 "; Overall Wd.: 1 1/2 "',
-        snapshot.products,
-        page_title=snapshot.title,
-    )
-
-    assert ranked[0].product.part_number == "1586A31"
-
-
-def test_model_number_is_strong_exact_signal():
-    products = [
-        ProductHit(
-            part_number="20395A68",
-            name='Cords for Measuring Tool Data Processors, Model 937387, 40" Long, 6-Pin x 10-Pin Connection',
-            url="https://www.mcmaster.com/20395A68",
-            context='Family: Mitutoyo 10-Pin Cables; Group: 40" Long; Electrical Connection: 6-Pin Mitutoyo Connector; Data Processor Connection: 10-Pin Mitutoyo Connector; Mfr. Model No.: 937387',
-            sources=["link", "product_page"],
-            confidence=1.0,
-        ),
-        ProductHit(
-            part_number="20395A7",
-            name='Cords for Measuring Tool Data Processors, Model 959149, 40" Long, Data Out Switch CX 10-Pin Connection',
-            url="https://www.mcmaster.com/20395A7",
-            context='Family: Mitutoyo 10-Pin Cables; Group: 40" Long; Electrical Connection: Mitutoyo Data Out Switch C; Data Processor Connection: 10-Pin Mitutoyo Connector; Mfr. Model No.: 959149',
-            sources=["link", "product_page"],
-            confidence=1.0,
-        ),
-    ]
-    ranked = rank_products(
-        'Cords for Measuring Tool Data Processors, Model 959149, 40" Long, Data Out Switch CX 10-Pin Connection. Connection: Mitutoyo Data Out Switch C x 10-Pin Mitutoyo Connector',
-        products,
-    )
-
-    assert ranked[0].product.part_number == "20395A7"
-
-
-def test_product_type_title_beats_same_range_for_accessory():
-    products = [
-        ProductHit(
-            part_number="4996A74",
-            name='Digital Caliper, 0" to 12" and 0 mm to 300 mm Measuring Ranges',
-            url="https://www.mcmaster.com/4996A74",
-            context='Family: Digital Calipers; Measuring Range Inch: 0" to 12"; Measuring Range Metric, mm: 0 to 300; Body Material: Stainless Steel',
-            sources=["link", "product_page"],
-            confidence=1.0,
-        ),
-        ProductHit(
-            part_number="2231N13",
-            name='Case for Starrett Calipers, with 0" to 12" and 0 mm to 300 mm Measuring Ranges',
-            url="https://www.mcmaster.com/2231N13",
-            context='Family: Starrett Caliper Cases; For Caliper Measurement Range: 0" to 12" , 0 mm to 300 mm; Material: Wood; For Mfr. Model No.: 120-12 , 120Z-12 , 798A-12/300',
-            sources=["link", "product_page"],
-            confidence=1.0,
-        ),
-    ]
-    ranked = rank_products(
-        'digital caliper. Case for Starrett Calipers, with 0" to 12" and 0 mm to 300 mm Measuring Ranges. Family: Digital Calipers; Group: Starrett; Material: Wood',
-        products,
-    )
-
-    assert ranked[0].product.part_number == "2231N13"

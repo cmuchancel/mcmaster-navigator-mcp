@@ -10,9 +10,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from .extract import BASE_URL, PART_RE, clean_text, normalize_target, product_url, search_url, snapshot_from_html
+from .extract import BASE_URL, PART_RE, normalize_target, search_url, snapshot_from_html
 from .models import FindPartsResult, PageSnapshot, ProductHit
-from .rank import derive_search_queries, derive_search_query, rank_products
 
 
 @dataclass
@@ -140,7 +139,7 @@ class McMasterNavigator:
         products = _merge_products([], first.products)
 
         if len(products) < max_results and max_pages > 1:
-            for link in _rank_links_for_query(first, query):
+            for link in _order_links_for_query(first, query):
                 if len(pages) >= max_pages or len(products) >= max_results:
                     break
                 try:
@@ -160,105 +159,6 @@ class McMasterNavigator:
                 "unique_part_numbers": len({product.part_number for product in products}),
             },
         )
-
-    def find_exact_part(
-        self,
-        description: str,
-        *,
-        search_query: str | None = None,
-        max_candidates: int = 10,
-        max_pages: int = 20,
-        auto_drill_depth: int | None = None,
-        _retry_on_empty: bool = True,
-    ) -> dict[str, Any]:
-        query = search_query or derive_search_query(description)
-        search_queries = [search_query] if search_query else derive_search_queries(description)
-        pages: list[PageSnapshot] = []
-        products: list[ProductHit] = []
-
-        for query_candidate in search_queries:
-            if not query_candidate or len(pages) >= max_pages:
-                continue
-            page = self.search(query_candidate, max_depth=auto_drill_depth)
-            pages.append(page)
-            products = _merge_products(products, page.products)
-
-        verified_parts: set[str] = set()
-        fallback_links = iter(_rank_links_for_query(pages[0], f"{query} {description}")) if pages else iter(())
-        while len(pages) < max_pages:
-            opened_page = False
-            if len(pages) >= max_pages:
-                break
-            ranked = _rank_products_for_pages(description, products, pages)
-            candidate = next(
-                (
-                    item
-                    for item in ranked
-                    if item["part_number"] not in verified_parts and item.get("url")
-                ),
-                None,
-            )
-            if candidate is not None:
-                part_number = candidate["part_number"]
-                try:
-                    page = self.open(candidate["url"])
-                except Exception:
-                    verified_parts.add(part_number)
-                    continue
-                pages.append(page)
-                verified_parts.add(part_number)
-                title_hit = _product_page_title_hit(page, part_number)
-                if title_hit is not None:
-                    products = _merge_products(products, [title_hit])
-                opened_page = True
-
-            if opened_page:
-                continue
-
-            for link in fallback_links:
-                try:
-                    page = self.open(link.url)
-                except Exception:
-                    continue
-                pages.append(page)
-                products = _merge_products(products, page.products)
-                opened_page = True
-                break
-
-            if not opened_page:
-                break
-
-        ranked = _rank_products_for_pages(description, products, pages)
-        if _retry_on_empty and not ranked and pages:
-            self.close()
-            self._trail = []
-            retried = self.find_exact_part(
-                description,
-                search_query=search_query,
-                max_candidates=max_candidates,
-                max_pages=max_pages,
-                auto_drill_depth=auto_drill_depth,
-                _retry_on_empty=False,
-            )
-            retried.setdefault("diagnostics", {})["retried_after_empty"] = True
-            return retried
-        best = ranked[0] if ranked else None
-        selected = _selected_part_result(best)
-        return {
-            "description": description,
-            "search_query": query,
-            "search_queries": search_queries,
-            "part_number": selected["part_number"] if selected else None,
-            "selected_part": selected,
-            "candidates": ranked[:max_candidates],
-            "candidate_count": len(ranked),
-            "pages_visited": [page.to_summary_dict() for page in pages],
-            "diagnostics": {
-                "max_candidates": max_candidates,
-                "max_pages": max_pages,
-                "auto_drill_depth": auto_drill_depth,
-            },
-        }
 
     def follow_link(
         self,
@@ -409,7 +309,7 @@ class McMasterNavigator:
     ) -> PageSnapshot | None:
         best: PageSnapshot | None = None
         opened = 0
-        for link in _rank_links_for_query(snapshot, query):
+        for link in _order_links_for_query(snapshot, query):
             if link.kind not in {"category", "catalog_category"}:
                 continue
             if link.url in visited:
@@ -461,51 +361,7 @@ def _merge_products(existing: list[ProductHit], incoming: list[ProductHit]) -> l
     return sorted(by_part.values(), key=lambda item: (-item.confidence, item.part_number))
 
 
-def _rank_products_for_pages(
-    description: str,
-    products: list[ProductHit],
-    pages: list[PageSnapshot],
-) -> list[dict[str, Any]]:
-    page_title = pages[-1].title if pages else ""
-    ranked = rank_products(description, products, page_title=page_title)
-    results = []
-    for item in ranked:
-        data = item.to_dict()
-        data["matched_term_count"] = len(item.matched_terms)
-        data["missing_term_count"] = len(item.missing_terms)
-        results.append(data)
-    return results
-
-
-def _selected_part_result(best: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not best:
-        return None
-    return {
-        "part_number": best["part_number"],
-        "name": best["name"],
-        "url": best["url"],
-        "score": best["score"],
-        "matched_terms": best["matched_terms"],
-        "missing_terms": best["missing_terms"],
-        "evidence": best["evidence"],
-    }
-
-
-def _product_page_title_hit(page: PageSnapshot, part_number: str) -> ProductHit | None:
-    title = clean_text(page.title).replace(" | McMaster-Carr", "")
-    if not title or title.lower() == "mcmaster-carr":
-        return None
-    return ProductHit(
-        part_number=part_number,
-        name=title,
-        url=product_url(part_number),
-        context="",
-        sources=["product_page"],
-        confidence=1.0,
-    )
-
-
-def _rank_links_for_query(snapshot: PageSnapshot, query: str):
+def _order_links_for_query(snapshot: PageSnapshot, query: str):
     terms = [term for term in re_split_query(query) if len(term) > 2]
 
     def score(link) -> tuple[int, str]:

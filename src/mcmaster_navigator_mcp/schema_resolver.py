@@ -11,8 +11,8 @@ from typing import Any
 
 from .extract import PART_RE, clean_text
 from .models import PageSnapshot
-from .navigator import McMasterNavigator, _rank_links_for_query
-from .rank import derive_search_queries, normalize, term_matches
+from .navigator import McMasterNavigator, _order_links_for_query
+from .catalog_text import CATALOG_SEMANTIC_STOPWORDS, derive_search_queries, normalize, term_matches
 
 LITERAL_IDENTIFIER_RE = re.compile(
     r"\b(?=[A-Z0-9./-]{5,}\b)(?=[A-Z0-9./-]*\d)"
@@ -313,7 +313,7 @@ def resolve_exact_part_dynamic(
 
     return {
         "description": description,
-        "strategy": "dynamic_schema_llm",
+        "resolver": "dynamic_schema_llm",
         "model": model,
         "status": status,
         "part_number": selected_part_number,
@@ -364,7 +364,7 @@ def collect_schema_rows(
     for query, page in search_pages:
         if len(rows) >= max_rows:
             break
-        for link in rank_schema_links(page, description=description, query=query):
+        for link in order_schema_links(page, description=description, query=query):
             if len(pages) >= max_pages or len(rows) >= max_rows:
                 break
             if link.url in seen_page_urls:
@@ -379,18 +379,18 @@ def collect_schema_rows(
     return rows[:max_rows], pages
 
 
-def rank_schema_links(page: PageSnapshot, *, description: str, query: str) -> list[Any]:
-    ranked = _rank_links_for_query(page, f"{query} {description}")
+def order_schema_links(page: PageSnapshot, *, description: str, query: str) -> list[Any]:
+    ordered = _order_links_for_query(page, f"{query} {description}")
     labels = explicit_description_labels(description)
     family_values = labels.get("family", [])
     if not family_values:
-        return ranked
+        return ordered
     return [
         link
         for _priority, _index, link in sorted(
             (
                 (family_link_priority(link, family_values), index, link)
-                for index, link in enumerate(ranked)
+                for index, link in enumerate(ordered)
             ),
             key=lambda item: (item[0], item[1]),
         )
@@ -1112,7 +1112,7 @@ def llm_map_constraints_to_schema(
     )
     user = json.dumps(
         {
-            "task": "Map each required constraint to one available field so deterministic code can filter rows.",
+            "task": "Map each required constraint to one available field so programmatic code can filter rows.",
             "description": description,
             "normalized_constraints": normalized.get("constraints", []),
             "available_fields": allowed_fields,
@@ -1217,7 +1217,7 @@ def llm_repair_matchers_from_live_schema(
     )
     user = json.dumps(
         {
-            "task": "Repair the matchers so deterministic code can filter rows without hardcoded part-family logic.",
+            "task": "Repair the matchers so programmatic code can filter rows without hardcoded part-family logic.",
             "description": description,
             "normalized_constraints": normalized.get("constraints", []),
             "initial_matchers": [matcher for matcher in matchers if isinstance(matcher, dict)],
@@ -1750,77 +1750,6 @@ CATALOG_VALUE_ARTIFACT_MARKERS = (
     "price each",
     "quantity each",
 )
-
-CATALOG_SEMANTIC_STOPWORDS = {
-    "a",
-    "an",
-    "and",
-    "by",
-    "for",
-    "in",
-    "of",
-    "on",
-    "or",
-    "the",
-    "to",
-    "with",
-    "x",
-    "amp",
-    "amps",
-    "cm",
-    "degree",
-    "degrees",
-    "feet",
-    "foot",
-    "ft",
-    "g",
-    "hp",
-    "inch",
-    "inches",
-    "kg",
-    "lb",
-    "lbs",
-    "m",
-    "mm",
-    "oz",
-    "psi",
-    "rpm",
-    "v",
-    "volt",
-    "volts",
-    "w",
-    "watt",
-    "watts",
-    "capacity",
-    "diameter",
-    "height",
-    "id",
-    "inside",
-    "length",
-    "long",
-    "max",
-    "maximum",
-    "min",
-    "minimum",
-    "model",
-    "no",
-    "number",
-    "od",
-    "outside",
-    "overall",
-    "package",
-    "pack",
-    "part",
-    "pkg",
-    "qty",
-    "quantity",
-    "range",
-    "rating",
-    "size",
-    "thread",
-    "type",
-    "width",
-}
 
 NULLISH_CATALOG_VALUES = {"-", "__", "—", "–", "none", "no", "n/a", "na", "not applicable"}
 NULLISH_REQUEST_TOKENS = {"blank", "no", "none", "without", "less"}

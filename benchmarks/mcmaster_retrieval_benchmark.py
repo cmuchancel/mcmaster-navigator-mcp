@@ -26,8 +26,8 @@ if str(SRC) not in sys.path:
 
 from mcmaster_navigator_mcp.extract import PART_RE, clean_text
 from mcmaster_navigator_mcp.models import PageSnapshot
-from mcmaster_navigator_mcp.navigator import McMasterNavigator, _rank_links_for_query
-from mcmaster_navigator_mcp.rank import derive_search_queries, normalize, term_matches
+from mcmaster_navigator_mcp.catalog_text import derive_search_queries, normalize, term_matches
+from mcmaster_navigator_mcp.navigator import McMasterNavigator, _order_links_for_query
 
 LITERAL_IDENTIFIER_RE = re.compile(
     r"\b(?=[A-Z0-9./-]{5,}\b)(?=[A-Z0-9./-]*\d)"
@@ -90,9 +90,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--settle-seconds", type=float)
     parser.add_argument(
         "--selector",
-        choices=["deterministic", "llm-schema"],
-        default="deterministic",
-        help="Use the existing deterministic ranker or the schema-driven LLM constraint filter.",
+        choices=["llm-schema"],
+        default="llm-schema",
+        help="Use the schema-driven LLM constraint filter.",
     )
     parser.add_argument("--llm-model", default="")
     parser.add_argument("--llm-env-file", type=Path, action="append", default=[])
@@ -365,50 +365,9 @@ def score_seed(
     llm_client: "OpenAIJsonClient | None" = None,
     token_budget: "TokenBudget | None" = None,
 ) -> dict[str, Any]:
-    if args.selector == "llm-schema":
-        if llm_client is None or token_budget is None:
-            raise RuntimeError("llm-schema selector requires an LLM client and token budget")
-        return score_seed_llm_schema(navigator, seed, args, llm_client, token_budget)
-    started = time.time()
-    error = ""
-    returned_parts: list[str] = []
-    returned_products: list[dict[str, Any]] = []
-    pages: list[dict[str, Any]] = []
-    try:
-        result = navigator.find_exact_part(
-            seed["description"],
-            max_candidates=args.max_results,
-            max_pages=args.max_pages,
-            auto_drill_depth=args.auto_drill_depth,
-        )
-        selected_part_number = result["part_number"]
-        returned_products = result["candidates"]
-        returned_parts = [product["part_number"] for product in returned_products]
-        pages = result["pages_visited"]
-    except CaseTimeoutError:
-        raise
-    except Exception as exc:
-        error = f"{type(exc).__name__}: {exc}"
-
-    target = seed["part_number"]
-    rank = returned_parts.index(target) + 1 if target in returned_parts else None
-    selected_is_target = selected_part_number == target
-    return {
-        **seed,
-        "found": selected_is_target,
-        "rank": rank,
-        "top1": selected_is_target,
-        "top5": bool(rank and rank <= 5),
-        "top10": bool(rank and rank <= 10),
-        "top20": bool(rank and rank <= 20),
-        "selected_part_number": selected_part_number,
-        "returned_count": len(returned_parts),
-        "returned_part_numbers": returned_parts[: args.max_results],
-        "returned_products": returned_products[: args.max_results],
-        "pages_visited": pages,
-        "error": error,
-        "seconds": round(time.time() - started, 3),
-    }
+    if llm_client is None or token_budget is None:
+        raise RuntimeError("llm-schema selector requires an LLM client and token budget")
+    return score_seed_llm_schema(navigator, seed, args, llm_client, token_budget)
 
 
 def score_seed_llm_schema(
@@ -454,7 +413,7 @@ def score_seed_llm_schema(
         for query, page in search_pages:
             if len(rows) >= args.llm_max_rows:
                 break
-            for link in rank_schema_links(page, description=seed["description"], query=query):
+            for link in order_schema_links(page, description=seed["description"], query=query):
                 if len(pages) >= args.max_pages or len(rows) >= args.llm_max_rows:
                     break
                 if link.url in seen_page_urls:
@@ -557,18 +516,18 @@ def score_seed_llm_schema(
     }
 
 
-def rank_schema_links(page: PageSnapshot, *, description: str, query: str) -> list[Any]:
-    ranked = _rank_links_for_query(page, f"{query} {description}")
+def order_schema_links(page: PageSnapshot, *, description: str, query: str) -> list[Any]:
+    ordered = _order_links_for_query(page, f"{query} {description}")
     labels = explicit_description_labels(description)
     family_values = labels.get("family", [])
     if not family_values:
-        return ranked
+        return ordered
     return [
         link
         for _priority, _index, link in sorted(
             (
                 (family_link_priority(link, family_values), index, link)
-                for index, link in enumerate(ranked)
+                for index, link in enumerate(ordered)
             ),
             key=lambda item: (item[0], item[1]),
         )
@@ -1519,7 +1478,7 @@ def llm_map_constraints_to_schema(
     )
     user = json.dumps(
         {
-            "task": "Map each required constraint to one available field so deterministic code can filter rows.",
+            "task": "Map each required constraint to one available field so programmatic code can filter rows.",
             "description": description,
             "normalized_constraints": normalized.get("constraints", []),
             "available_fields": allowed_fields,
@@ -1704,7 +1663,7 @@ def llm_repair_matchers_from_live_schema(
     )
     user = json.dumps(
         {
-            "task": "Repair the matchers so deterministic code can filter rows without hardcoded part-family logic.",
+            "task": "Repair the matchers so programmatic code can filter rows without hardcoded part-family logic.",
             "description": description,
             "normalized_constraints": normalized.get("constraints", []),
             "initial_matchers": [matcher for matcher in matchers if isinstance(matcher, dict)],

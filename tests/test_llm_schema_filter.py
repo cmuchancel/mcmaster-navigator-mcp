@@ -1,29 +1,9 @@
-from __future__ import annotations
-
-import importlib.util
 from types import SimpleNamespace
-from pathlib import Path
 
 from mcmaster_navigator_mcp import schema_resolver
 
 
-ROOT = Path(__file__).resolve().parents[1]
-BENCHMARK = ROOT / "benchmarks" / "mcmaster_retrieval_benchmark.py"
-SPEC = importlib.util.spec_from_file_location("mcmaster_retrieval_benchmark", BENCHMARK)
-assert SPEC is not None and SPEC.loader is not None
-benchmark = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(benchmark)
-NEGATIVE_BENCHMARK = ROOT / "benchmarks" / "negative_ambiguity_benchmark.py"
-NEGATIVE_SPEC = importlib.util.spec_from_file_location("negative_ambiguity_benchmark", NEGATIVE_BENCHMARK)
-assert NEGATIVE_SPEC is not None and NEGATIVE_SPEC.loader is not None
-negative_benchmark = importlib.util.module_from_spec(NEGATIVE_SPEC)
-NEGATIVE_SPEC.loader.exec_module(negative_benchmark)
-NEAR_BENCHMARK = ROOT / "benchmarks" / "near_ambiguity_benchmark.py"
-NEAR_SPEC = importlib.util.spec_from_file_location("near_ambiguity_benchmark", NEAR_BENCHMARK)
-assert NEAR_SPEC is not None and NEAR_SPEC.loader is not None
-near_benchmark = importlib.util.module_from_spec(NEAR_SPEC)
-NEAR_SPEC.loader.exec_module(near_benchmark)
-FILTER_MODULES = (benchmark, schema_resolver)
+FILTER_MODULES = (schema_resolver,)
 
 
 def test_dynamic_matchers_filter_to_unique_part_without_field_hardcoding():
@@ -50,9 +30,9 @@ def test_dynamic_matchers_filter_to_unique_part_without_field_hardcoding():
         {"constraint": "pack of 5", "field": "attributes.Pkg. Qty.", "value": "5"},
     ]
 
-    matches, trace = benchmark.apply_constraint_matchers(rows, matchers)
+    matches, trace = schema_resolver.apply_constraint_matchers(rows, matchers)
 
-    assert benchmark.unique_part_numbers(matches) == ["90696A101"]
+    assert schema_resolver.unique_part_numbers(matches) == ["90696A101"]
     assert trace[-1]["after_unique_parts"] == 1
 
 
@@ -65,9 +45,9 @@ def test_dynamic_matchers_can_return_ambiguous_multiple_matches():
         {"constraint": "316 stainless", "field": "groups", "value": "316 stainless"},
     ]
 
-    matches, trace = benchmark.apply_constraint_matchers(rows, matchers)
+    matches, trace = schema_resolver.apply_constraint_matchers(rows, matchers)
 
-    assert benchmark.unique_part_numbers(matches) == ["A1", "A2"]
+    assert schema_resolver.unique_part_numbers(matches) == ["A1", "A2"]
     assert trace[-1]["after_unique_parts"] == 2
 
 
@@ -91,9 +71,9 @@ def test_accepted_values_match_exact_live_field_values():
         },
     ]
 
-    matches, trace = benchmark.apply_constraint_matchers(rows, matchers)
+    matches, trace = schema_resolver.apply_constraint_matchers(rows, matchers)
 
-    assert benchmark.unique_part_numbers(matches) == ["A1"]
+    assert schema_resolver.unique_part_numbers(matches) == ["A1"]
     assert trace[0]["after_unique_parts"] == 1
 
 
@@ -149,18 +129,18 @@ def test_empty_family_values_do_not_erase_unique_attribute_match():
         },
     ]
 
-    matches, trace = benchmark.apply_constraint_matchers(rows, matchers)
+    matches, trace = schema_resolver.apply_constraint_matchers(rows, matchers)
 
-    assert benchmark.unique_part_numbers(matches) == ["A2"]
+    assert schema_resolver.unique_part_numbers(matches) == ["A2"]
     assert trace[-1]["skipped"] is True
-    assert benchmark.should_repair_matchers(matchers, trace, matches) is False
+    assert schema_resolver.should_repair_matchers(matchers, trace, matches) is False
 
 
 def test_schema_search_queries_prefer_explicit_family_label():
     description = "toggle switch. Family: Toggle Switches; No. of Terminals: 3"
     normalized = {"search_queries": ["toggle switch 3 terminals", "maintained toggle switch"]}
 
-    queries = benchmark.schema_search_queries(description, normalized, limit=3)
+    queries = schema_resolver.schema_search_queries(description, normalized, limit=3)
 
     assert queries == ["Toggle Switches", "toggle switch", "toggle switch 3 terminals"]
 
@@ -181,18 +161,18 @@ def test_option_variants_require_matching_dynamic_option_constraint():
         },
     ]
 
-    unconstrained, trace = benchmark.apply_option_variant_scope(
+    unconstrained, trace = schema_resolver.apply_option_variant_scope(
         rows,
         [{"field": "attributes.Size", "value": "1", "accepted_values": ["1"]}],
     )
-    constrained, _ = benchmark.apply_option_variant_scope(
+    constrained, _ = schema_resolver.apply_option_variant_scope(
         rows,
         [{"field": "attributes.Wire Connection", "value": "Screw Terminal", "accepted_values": ["Screw Terminal"]}],
     )
 
-    assert benchmark.unique_part_numbers(unconstrained) == ["A1"]
+    assert schema_resolver.unique_part_numbers(unconstrained) == ["A1"]
     assert trace["removed_rows"] == 1
-    assert benchmark.unique_part_numbers(constrained) == ["A1", "A2"]
+    assert schema_resolver.unique_part_numbers(constrained) == ["A1", "A2"]
 
 
 def test_explicit_labels_augment_accepted_live_values():
@@ -218,7 +198,7 @@ def test_explicit_labels_augment_accepted_live_values():
     ]
     description = "Family: Stainless Steel Socket Head Screws; Group: M14 x 2 mm"
 
-    updated = benchmark.apply_explicit_label_values(description, matchers, rows)
+    updated = schema_resolver.apply_explicit_label_values(description, matchers, rows)
 
     assert "Stainless Steel Socket Head Screws" in updated[0]["accepted_values"]
     assert "M14 × 2 mm" in updated[1]["accepted_values"]
@@ -242,7 +222,7 @@ def test_explicit_attribute_label_remaps_prefixed_live_field():
         }
     ]
 
-    updated = benchmark.apply_explicit_label_values('For Flange OD: 1.18"', matchers, rows)
+    updated = schema_resolver.apply_explicit_label_values('For Flange OD: 1.18"', matchers, rows)
 
     assert updated[0]["field"] == "attributes.For Flange OD"
     assert updated[0]["accepted_values"] == ['1.18"']
@@ -266,7 +246,7 @@ def test_explicit_attribute_label_remaps_prefixed_suffix_field():
         }
     ]
 
-    updated = benchmark.apply_explicit_label_values("Max. Temp., °F: 300°", matchers, rows)
+    updated = schema_resolver.apply_explicit_label_values("Max. Temp., °F: 300°", matchers, rows)
 
     assert updated[0]["field"] == "attributes.Max. Temp., °F"
 
@@ -292,9 +272,9 @@ def test_concrete_attributes_apply_before_conflicting_family_label():
         {"field": "attributes.Size", "value": "16", "accepted_values": ["16"]},
     ]
 
-    matches, trace = benchmark.apply_constraint_matchers(rows, matchers)
+    matches, trace = schema_resolver.apply_constraint_matchers(rows, matchers)
 
-    assert benchmark.unique_part_numbers(matches) == ["A1"]
+    assert schema_resolver.unique_part_numbers(matches) == ["A1"]
     assert trace[-1]["skipped"] is True
 
 
@@ -650,261 +630,6 @@ def test_bad_late_attribute_does_not_erase_narrowed_match_set():
         assert module.unique_part_numbers(matches) == ["A1"]
         assert trace[1]["skipped"] is True
         assert trace[1]["skip_reason"] == "constraint conflicts with narrowed grounded match"
-
-
-def test_score_seed_timeout_restarts_browser_and_records_structured_result(monkeypatch):
-    class FakeNavigator:
-        instances = []
-
-        def __init__(self):
-            self.closed = False
-            self.instances.append(self)
-
-        def close(self):
-            self.closed = True
-
-    calls = 0
-
-    def always_timeout(navigator, seed, args, *, llm_client=None, token_budget=None):
-        nonlocal calls
-        calls += 1
-        token_budget.record(7)
-        raise benchmark.CaseTimeoutError("blocked browser operation")
-
-    monkeypatch.setattr(benchmark, "McMasterNavigator", FakeNavigator)
-    monkeypatch.setattr(benchmark, "score_seed", always_timeout)
-    args = SimpleNamespace(
-        selector="llm-schema",
-        case_timeout_seconds=0,
-        case_timeout_retries=1,
-    )
-    seed = {
-        "part_number": "A1",
-        "category": "Demo",
-        "seed_query": "demo",
-        "description": "specific demo part",
-    }
-    token_budget = benchmark.TokenBudget(100)
-    start = FakeNavigator()
-
-    result, navigator = benchmark.score_seed_with_recovery(
-        start,
-        seed,
-        args,
-        llm_client=object(),
-        token_budget=token_budget,
-    )
-
-    assert calls == 2
-    assert result["status"] == "timeout"
-    assert result["found"] is False
-    assert result["llm_tokens"] == 14
-    assert [instance.closed for instance in FakeNavigator.instances] == [True, True, False]
-    assert navigator is FakeNavigator.instances[-1]
-
-
-def test_negative_benchmark_errors_do_not_count_as_nonexistent_success():
-    case = {"kind": "nonexistent"}
-
-    assert negative_benchmark.evaluate_case(case, status="error", returned_count=0, selected_part="") is False
-    assert negative_benchmark.evaluate_case(case, status="timeout", returned_count=0, selected_part="") is False
-    assert negative_benchmark.evaluate_case(case, status="unresolved", returned_count=0, selected_part="") is True
-
-
-def test_negative_benchmark_retries_browser_start_errors():
-    result = {
-        "status": "error",
-        "error": "SessionNotCreatedException: cannot connect to chrome at 127.0.0.1",
-    }
-
-    assert negative_benchmark.retryable_result(result) is True
-    assert negative_benchmark.retryable_result({"status": "error", "error": "TypeError: bad code"}) is False
-    assert negative_benchmark.retryable_result({"status": "ambiguous", "error": ""}) is False
-
-
-def test_negative_benchmark_kind_parser_can_select_only_nonexistent():
-    assert negative_benchmark.parse_kinds("nonexistent") == {"nonexistent"}
-    assert negative_benchmark.parse_kinds("nonexistent, ambiguous") == {"nonexistent", "ambiguous"}
-
-
-def test_near_ambiguity_case_omits_one_dynamic_discriminator():
-    seed = {"part_number": "A1", "category": "Fastening", "seed_query": "hex head screw"}
-    rows = [
-        {
-            "part_number": "A1",
-            "family": "Hex Head Screws",
-            "groups": ["Steel"],
-            "selected_option": "",
-            "attributes": {
-                "Thread Size": "1/4-20",
-                "Length": '1"',
-                "Head Width": '7/16"',
-                "Finish": "Zinc-Plated",
-            },
-        },
-        {
-            "part_number": "A2",
-            "family": "Hex Head Screws",
-            "groups": ["Steel"],
-            "selected_option": "",
-            "attributes": {
-                "Thread Size": "1/4-20",
-                "Length": '1"',
-                "Head Width": '7/16"',
-                "Finish": "Plain",
-            },
-        },
-        {
-            "part_number": "A3",
-            "family": "Hex Head Screws",
-            "groups": ["Steel"],
-            "selected_option": "",
-            "attributes": {
-                "Thread Size": "5/16-18",
-                "Length": '1"',
-                "Head Width": '1/2"',
-                "Finish": "Zinc-Plated",
-            },
-        },
-    ]
-
-    case = near_benchmark.find_near_ambiguous_case(
-        seed=seed,
-        rows=rows,
-        pages=[],
-        expected_max_count=4,
-        min_common_constraints=4,
-    )
-
-    assert case is not None
-    assert case["expected_part_numbers"] == ["A1", "A2"]
-    assert case["expected_count"] == 2
-    assert "Finish" in case["omitted_fields"]
-    assert "Finish:" not in case["description"]
-    assert "Thread Size: 1/4-20" in case["description"]
-
-
-def test_near_ambiguity_generation_excludes_cross_option_scoped_common_columns():
-    seed = {"part_number": "A1", "category": "Heating", "seed_query": "cartridge heater"}
-    rows = [
-        {
-            "part_number": "A1",
-            "family": "Cartridge Heaters",
-            "groups": ["Metric"],
-            "selected_option": "120V AC, Single Phase",
-            "attributes": {
-                "Diameter": "6 mm",
-                "Overall Length": "40 mm",
-                "120V AC, Single Phase Current, amp": "0.8",
-                "240V AC, Single Phase Current, amp": "0.4",
-            },
-        },
-        {
-            "part_number": "A2",
-            "family": "Cartridge Heaters",
-            "groups": ["Metric"],
-            "selected_option": "240V AC, Single Phase",
-            "attributes": {
-                "Diameter": "6 mm",
-                "Overall Length": "40 mm",
-                "120V AC, Single Phase Current, amp": "0.8",
-                "240V AC, Single Phase Current, amp": "0.4",
-            },
-        },
-    ]
-
-    case = near_benchmark.find_near_ambiguous_case(
-        seed=seed,
-        rows=rows,
-        pages=[],
-        expected_max_count=4,
-        min_common_constraints=4,
-    )
-
-    assert case is not None
-    assert case["expected_part_numbers"] == ["A1", "A2"]
-    assert "Selected option" in case["omitted_fields"]
-    assert "120V AC, Single Phase Current" not in case["description"]
-    assert "240V AC, Single Phase Current" not in case["description"]
-
-
-def test_near_ambiguity_constraints_exclude_price_and_other_option_fields():
-    rows = [
-        {
-            "part_number": "A1",
-            "family": "L-Keys",
-            "groups": [],
-            "selected_option": "Each",
-            "attributes": {
-                "Length Long Leg": '2 5/8 "',
-                "Package Pkg. Qty.": "10",
-                "Pair": "20.86",
-            },
-        },
-        {
-            "part_number": "A2",
-            "family": "L-Keys",
-            "groups": [],
-            "selected_option": "Package",
-            "attributes": {},
-        },
-    ]
-
-    pairs = near_benchmark.constraint_pairs(rows[0], rows)
-    labels = {pair["label"] for pair in pairs}
-
-    assert "Length Long Leg" in labels
-    assert "Package Pkg. Qty." not in labels
-    assert "Pair" not in labels
-
-
-def test_row_description_uses_target_row_and_selected_option_scope():
-    page = SimpleNamespace(
-        title="filter cartridges | McMaster-Carr",
-        url="https://www.mcmaster.com/demo",
-        products=[],
-        schemas=[
-            {
-                "tables": [
-                    {
-                        "title": "High-Pressure Inline Filters",
-                        "rows": [
-                            {
-                                "part_number": "A1",
-                                "family": "High-Pressure Inline Filters",
-                                "groups": [],
-                                "selected_option": "Brass Housing",
-                                "attributes": {
-                                    "For Tube OD": '1/4 "',
-                                    "Features": "__",
-                                    "Brass Housing Max. Pressure, psi": "1,000",
-                                    "Brass Housing Max. Temp., °F": "300°",
-                                    "Brass Housing Each": "68.17",
-                                    "316 Stainless Steel Housing Max. Pressure, psi": "3,000",
-                                },
-                            },
-                            {
-                                "part_number": "A2",
-                                "family": "High-Pressure Inline Filters",
-                                "groups": [],
-                                "selected_option": "316 Stainless Steel Housing",
-                                "attributes": {},
-                            },
-                        ],
-                    }
-                ]
-            }
-        ],
-    )
-
-    description = benchmark.row_description_for_part(page, "A1")
-
-    assert "Selected option: Brass Housing" in description
-    assert 'For Tube OD: 1/4 "' in description
-    assert "Features: none" in description
-    assert "Brass Housing Max. Pressure, psi: 1,000" in description
-    assert "316 Stainless Steel Housing" not in description
-    assert "Each" not in description
 
 
 def test_unique_candidate_verification_requires_match_and_no_missing_constraints():

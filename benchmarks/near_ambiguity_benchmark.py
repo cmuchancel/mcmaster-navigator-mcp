@@ -20,10 +20,10 @@ if str(SRC) not in sys.path:
 if str(BENCHMARKS) not in sys.path:
     sys.path.insert(0, str(BENCHMARKS))
 
-from mcmaster_navigator_mcp.extract import clean_text
-from mcmaster_navigator_mcp.rank import normalize
 from mcmaster_navigator_mcp.navigator import McMasterNavigator
 from mcmaster_navigator_mcp.schema_resolver import collect_schema_rows, resolve_exact_part_dynamic, unique_part_numbers
+from mcmaster_navigator_mcp.catalog_text import normalize
+from mcmaster_navigator_mcp.extract import clean_text
 
 from negative_ambiguity_benchmark import (
     append_jsonl,

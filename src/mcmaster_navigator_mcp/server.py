@@ -72,12 +72,6 @@ async def list_tools() -> list[Tool]:
                     "max_candidates": {"type": "integer", "default": 10},
                     "max_pages": {"type": "integer", "default": 20},
                     "auto_drill_depth": {"type": "integer", "default": 2},
-                    "strategy": {
-                        "type": "string",
-                        "enum": ["dynamic_schema", "deterministic"],
-                        "default": "dynamic_schema",
-                        "description": "dynamic_schema uses OPENAI_API_KEY to map constraints to live page schemas; deterministic uses the legacy text ranker.",
-                    },
                 },
                 "required": ["description"],
             },
@@ -253,21 +247,10 @@ def _dispatch_once(action: str, payload: dict[str, Any], navigator: McMasterNavi
             auto_drill_depth=payload.get("auto_drill_depth"),
         ).to_dict()
     if action == "find_exact_part":
-        strategy = (payload.get("strategy") or "dynamic_schema").strip()
-        if strategy == "dynamic_schema":
-            from .schema_resolver import resolve_exact_part_dynamic
+        from .schema_resolver import resolve_exact_part_dynamic
 
-            return resolve_exact_part_dynamic(
-                navigator,
-                payload["description"],
-                search_query=payload.get("search_query"),
-                max_candidates=int(payload.get("max_candidates", 10)),
-                max_pages=int(payload.get("max_pages", 20)),
-                auto_drill_depth=payload.get("auto_drill_depth"),
-            )
-        if strategy != "deterministic":
-            raise ValueError(f"Unknown mcmaster_find_exact_part strategy: {strategy}")
-        return navigator.find_exact_part(
+        return resolve_exact_part_dynamic(
+            navigator,
             payload["description"],
             search_query=payload.get("search_query"),
             max_candidates=int(payload.get("max_candidates", 10)),
