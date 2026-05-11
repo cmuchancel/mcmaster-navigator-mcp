@@ -9,6 +9,8 @@
 }
 
 \usepackage{tikz}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
 
 \newcommand{\mcp}{MCP}
 \newcommand{\tool}[1]{\texttt{#1}}
@@ -136,55 +138,11 @@ The exact recovery benchmark evaluates precision when the description is suffici
 \label{fig:exact-example}
 \end{figure}
 
-The final exact-recovery run used 250 cases sampled across 25 catalog categories, later summarized in Fig.~\ref{fig:category-coverage}.
+The final exact-recovery run used 250 cases sampled across 25 catalog categories, summarized in Fig.~\ref{fig:category-coverage}.
 
-\subsection{Multi-Match Part Recovery}
-
-The multi-match benchmark evaluates whether the resolver preserves alternatives for under-specified descriptions rather than forcing a single choice. The 50 cases cover two common forms of ambiguity. In 25 controlled cases, we start from successful exact cases, collect the live schema rows around the target, and remove one discriminator from the description. This creates a new description with a known matching set, usually two to four parts, computed from the same rendered catalog rows. The other 25 cases use broader descriptions such as ``double sided tape,'' ``ball bearing,'' ``door hinges,'' and ``toggle switch.'' These test the same behavior at larger cardinalities. A multi-match case passes when the resolver returns the matching set for controlled cases, or returns multiple matching part numbers for broad cases, without inventing a single best answer.
-
-\subsection{No-Match Part Descriptions}
-
-The no-match benchmark evaluates whether the resolver can return an empty set when the description contains requirements that no visible McMaster-Carr row satisfies. These cases start from exact descriptions and add impossible required constraints such as an unobtainable material, impossible color, or impossible size. A case passes only when the resolver returns no part numbers. This tests the failure mode most important for automated sourcing: the tool should report that no catalog match was found rather than selecting a nearby but incorrect part.
-
-\subsection{Parallel Execution for Assemblies}
-% TODO: Add assembly-level parallel sourcing evaluation.
-
-\section{Experimental Results}
-
-\begin{figure*}[t]
+\begin{figure}[t]
 \centering
-\begin{tikzpicture}[
-  outcome/.style={draw, rounded corners=2pt, fill=black!3, minimum width=4.25cm, minimum height=2.2cm, align=center, inner sep=4pt}
-]
-\node[outcome] (exact) at (0,0) {
-  {\bfseries\small Exact}\\[2pt]
-  {\bfseries\Large 250/250}\\[-1pt]
-  {\scriptsize one held-out part recovered}
-};
-\node[outcome] (multi) at (4.75,0) {
-  {\bfseries\small Multi-match}\\[2pt]
-  {\bfseries\Large 50/50}\\[-1pt]
-  {\scriptsize alternatives preserved}
-};
-\node[outcome] (none) at (9.50,0) {
-  {\bfseries\small No match}\\[2pt]
-  {\bfseries\Large 25/25}\\[-1pt]
-  {\scriptsize empty set returned}
-};
-\node[font=\scriptsize, align=center] at (4.75,-1.55) {All completed benchmark regimes returned the expected match-set behavior.};
-\end{tikzpicture}
-\caption{Benchmark outcome summary. The resolver returns one part for sufficiently specific descriptions, preserves alternatives for under-specified descriptions, and returns no parts for impossible descriptions.}
-\label{fig:benchmark-outcomes}
-\end{figure*}
-
-Figure~\ref{fig:benchmark-outcomes} summarizes the completed benchmark runs.
-
-\subsection{Exact Part Recovery Results}
-
-The exact-recovery benchmark returned exactly one part number for all 250 cases, and that part number was the held-out target in every case.
-
-\begin{figure*}[t]
-\centering
+\resizebox{\columnwidth}{!}{%
 \begin{tikzpicture}[
   cat/.style={draw, rounded corners=1.5pt, fill=black!3, text width=2.65cm, minimum height=0.53cm, align=center, inner sep=2pt, font=\scriptsize},
   coverageNote/.style={font=\bfseries\scriptsize}
@@ -216,22 +174,130 @@ The exact-recovery benchmark returned exactly one part number for all 250 cases,
 \node[cat] at (12.0,-2.88) {Suspending};
 \node[coverageNote] at (6.0,-3.55) {25 catalog families: all sampled exact-recovery descriptions resolved to the held-out part number.};
 \end{tikzpicture}
+}
 \caption{Exact-recovery coverage across catalog families. The grid reports the diversity of product families represented in the 250-case exact-recovery run.}
 \label{fig:category-coverage}
-\end{figure*}
+\end{figure}
+
+\subsection{Multi-Match Part Recovery}
+
+The multi-match benchmark evaluates whether the resolver preserves alternatives for under-specified descriptions rather than forcing a single choice. The 50 cases cover two common forms of ambiguity. In 25 controlled cases, we start from successful exact cases, collect the live schema rows around the target, and remove one discriminator from the description. This creates a new description with a known matching set, usually two to four parts, computed from the same rendered catalog rows. The other 25 cases use broader descriptions such as ``double sided tape,'' ``ball bearing,'' ``door hinges,'' and ``toggle switch.'' These test the same behavior at larger cardinalities. A multi-match case passes when the resolver returns the matching set for controlled cases, or returns multiple matching part numbers for broad cases, without inventing a single best answer.
+
+\subsection{No-Match Part Descriptions}
+
+The no-match benchmark evaluates whether the resolver can return an empty set when the description contains requirements that no visible McMaster-Carr row satisfies. These cases start from exact descriptions and add impossible required constraints such as an unobtainable material, impossible color, or impossible size. A case passes only when the resolver returns no part numbers. This tests the failure mode most important for automated sourcing: the tool should report that no catalog match was found rather than selecting a nearby but incorrect part.
+
+\subsection{Parallel Execution for Assemblies}
+% TODO: Add assembly-level parallel sourcing evaluation.
+
+\section{Experimental Results}
+
+\subsection{Exact Part Recovery Results}
+
+The exact-recovery benchmark returned exactly one part number for all 250 cases, and that part number was the held-out target in every case. This corresponds to 250/250 exact recovery, or 100\% accuracy. The run used an average of 7,449.96 recorded LLM tokens per case and an average wall-clock time of 71.038~s per case.
 
 The absence of misses across these categories is evidence that runtime schema extraction can handle substantially different product families. It is not proof of complete coverage of every McMaster-Carr page or every possible human description. The strongest defensible claim is that dynamic schema extraction and deterministic filtering can recover exact part numbers across diverse catalog families when descriptions contain sufficient identifying information.
 
 \subsection{Multi-Match Part Recovery Results}
 
-The multi-match benchmark passed all 50 under-specified cases. For controlled cases, the resolver returned the expected matching set. For broad category-level descriptions, it returned multiple part numbers rather than collapsing the request to a single guess. These results are reported together because they test the same contract: when a description admits more than one catalog row, the returned object should preserve the alternatives.
+The multi-match benchmark passed all 50 under-specified cases, for a 100\% multi-match pass rate. For controlled cases, the resolver returned the expected matching set. For broad category-level descriptions, it returned multiple part numbers rather than collapsing the request to a single guess. These results are reported together because they test the same contract: when a description admits more than one catalog row, the returned object should preserve the alternatives. Across the combined multi-match set, the resolver used an average of 5,573.02 recorded LLM tokens per case and an average wall-clock time of 57.657~s per case.
 
 \subsection{No-Match Part Description Results}
 
-The no-match benchmark returned empty part-number sets for all 25 cases. This indicates that, for the tested impossible descriptions, the resolver did not force a nearest-neighbor part when the required constraints could not be satisfied.
+The no-match benchmark returned empty part-number sets for all 25 cases, for a 100\% no-match pass rate. This indicates that, for the tested impossible descriptions, the resolver did not force a nearest-neighbor part when the required constraints could not be satisfied. The run used an average of 10,731.72 recorded LLM tokens per case and an average wall-clock time of 75.348~s per case.
 
-\subsection{Parallel Execution for Assemblies}
-% TODO: Add assembly-level parallel sourcing results.
+\subsection{Summary of Experimental Results}
+
+Figure~\ref{fig:benchmark-outcomes} summarizes the completed benchmark runs. The overall reported benchmark set contains 325 cases: 250 exact-recovery cases, 50 multi-match cases, and 25 no-match cases. All 325 returned the expected match-set behavior. Figures~\ref{fig:benchmark-tokens} and~\ref{fig:benchmark-time} compare the recorded token and time costs across benchmark categories; the average bar is the unweighted mean across exact, multi-match, and no-match categories.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  outcome/.style={draw, rounded corners=2pt, fill=black!3, minimum width=0.94\columnwidth, minimum height=0.78cm, align=center, inner sep=3pt}
+]
+\node[outcome] (exact) at (0,0) {
+  {\bfseries\small Exact: 250/250}\\[-1pt]
+  {\scriptsize one held-out part recovered}
+};
+\node[outcome] (multi) at (0,-0.95) {
+  {\bfseries\small Multi-match: 50/50}\\[-1pt]
+  {\scriptsize alternatives preserved}
+};
+\node[outcome] (none) at (0,-1.90) {
+  {\bfseries\small No match: 25/25}\\[-1pt]
+  {\scriptsize empty set returned}
+};
+\node[font=\scriptsize, align=center, text width=0.94\columnwidth] at (0,-2.72) {All completed benchmark regimes returned the expected match-set behavior.};
+\end{tikzpicture}
+\caption{Benchmark outcome summary. The resolver returns one part for sufficiently specific descriptions, preserves alternatives for under-specified descriptions, and returns no parts for impossible descriptions.}
+\label{fig:benchmark-outcomes}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  ybar,
+  width=0.94\columnwidth,
+  height=3.6cm,
+  ymin=0,
+  ymax=12000,
+  ylabel={Mean recorded LLM tokens per case},
+  symbolic x coords={Exact,Multi-match,No match,Average},
+  xtick=data,
+  ytick={0,4000,8000,12000},
+  nodes near coords,
+  nodes near coords align={vertical},
+  every node near coord/.append style={font=\scriptsize},
+  tick label style={font=\scriptsize},
+  label style={font=\scriptsize},
+  bar width=10pt,
+  clip=false
+]
+\addplot[fill=black!20, draw=black] coordinates {
+  (Exact,7450) (Multi-match,5573) (No match,10732) (Average,7918)
+};
+\end{axis}
+\end{tikzpicture}
+\caption{Mean recorded LLM tokens by benchmark category. The average bar is the unweighted mean of the three category means.}
+\label{fig:benchmark-tokens}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  ybar,
+  width=0.94\columnwidth,
+  height=3.6cm,
+  ymin=0,
+  ymax=85,
+  ylabel={Mean wall-clock seconds per case},
+  symbolic x coords={Exact,Multi-match,No match,Average},
+  xtick=data,
+  ytick={0,20,40,60,80},
+  nodes near coords,
+  nodes near coords align={vertical},
+  every node near coord/.append style={font=\scriptsize},
+  tick label style={font=\scriptsize},
+  label style={font=\scriptsize},
+  bar width=10pt,
+  clip=false
+]
+\addplot[fill=black!20, draw=black] coordinates {
+  (Exact,71.0) (Multi-match,57.7) (No match,75.3) (Average,68.0)
+};
+\end{axis}
+\end{tikzpicture}
+\caption{Mean wall-clock time by benchmark category. The average bar is the unweighted mean of the three category means.}
+\label{fig:benchmark-time}
+\end{figure}
+
+\subsection{Assembly Demonstration}
+
+The assembly demonstration evaluates the resolver as a line-item sourcing component. Each off-the-shelf component description in an assembly is sent independently to \tool{mcmaster\_find\_exact\_part}; the returned match set is then available to product-data tools that attach live links, prices, datasheets, CAD files, and bill-of-material entries. The demonstration section will report the final sourced assembly, the recovered part-number sets for each line item, and the downstream artifacts attached to the bill of materials.
+
+\clearpage
 
 \section{Discussion}
 
