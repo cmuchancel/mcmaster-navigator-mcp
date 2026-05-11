@@ -150,6 +150,9 @@ We also include broad multi-match descriptions such as ``double sided tape,'' ``
 
 The no-match benchmark evaluates whether the resolver can return an empty set when the description contains requirements that no visible McMaster-Carr row satisfies. These cases start from exact descriptions and add impossible required constraints such as an unobtainable material, impossible color, or impossible size. A case passes only when the resolver returns no part numbers. This tests the failure mode most important for automated sourcing: the tool should report that no catalog match was found rather than selecting a nearby but incorrect part.
 
+\subsection{Parallel Execution for Assemblies}
+% TODO: Add assembly-level parallel sourcing evaluation.
+
 \section{Experimental Results}
 
 \begin{table*}[t]
