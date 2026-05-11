@@ -35,7 +35,7 @@
 \keywords{AI engineering agents, design automation, part sourcing, model context protocol, catalog grounding, bill of materials, CAD retrieval}
 
 \begin{abstract}
-AI engineering agents are beginning to translate textual requirements into mechanical part and component descriptions. To support procurement, bill-of-material generation, and CAD insertion, these descriptions must be grounded in existing catalog parts with exact part numbers. Product-data APIs can attach live links, prices, datasheets, and CAD files after identifiers are known; catalog-grounded part-number retrieval is the upstream step that makes these APIs usable by design agents. We present an open-source Model Context Protocol server for headless navigation of McMaster-Carr that converts sufficiently detailed component descriptions into matching catalog part numbers. The system renders live catalog pages, extracts visible product-table schemas, uses a language model to map requested constraints onto live field names and values, and then performs deterministic row filtering. The output is the set of catalog parts that satisfy the grounded description. In final benchmark runs, the system recovered 250/250 exact part numbers across 25 catalog categories, returned the expected multi-part sets in 50/50 under-specified cases, and returned no part in 25/25 nonexistent cases. By making part sourcing callable by agents, the method enables downstream workflows in which assemblies are crafted from off-the-shelf parts and automatically linked to product data, prices, datasheets, CAD, and bills of materials.
+AI engineering agents are beginning to translate textual requirements into mechanical part and component descriptions. To support procurement, bill-of-material generation, and CAD insertion, these descriptions must be grounded in existing catalog parts with exact part numbers. Product-data APIs can attach live links, prices, datasheets, and CAD files after identifiers are known; catalog-grounded part-number retrieval is the upstream step that makes these APIs usable by design agents. We present an open-source Model Context Protocol server for headless navigation of McMaster-Carr that converts sufficiently detailed component descriptions into matching catalog part numbers. The system renders live catalog pages, extracts visible product-table schemas, uses a language model to map requested constraints onto live field names and values, and then performs deterministic row filtering. The output is the set of catalog parts that satisfy the grounded description. In final benchmark runs, the system recovered 250/250 exact part numbers across 25 catalog categories, preserved multi-part alternatives in 50/50 under-specified cases, and returned no part in 25/25 nonexistent cases. By making part sourcing callable by agents, the method enables downstream workflows in which assemblies are crafted from off-the-shelf parts and automatically linked to product data, prices, datasheets, CAD, and bills of materials.
 \end{abstract}
 
 \section{Introduction}
@@ -140,9 +140,7 @@ The final exact-recovery run used 250 cases sampled across 25 catalog categories
 
 \subsection{Multi-Match Part Recovery}
 
-The multi-match benchmark evaluates whether the resolver returns all parts that satisfy an under-specified description rather than forcing a single choice. Starting from successful exact cases, we collected the live schema rows around the target and removed one discriminator from the description. This creates a new description with a known matching set, usually two to four parts, computed from the same rendered catalog rows. A case passes when the resolver returns that expected part-number set and includes the original target as one member of the set.
-
-We also include broad multi-match descriptions such as ``double sided tape,'' ``ball bearing,'' ``door hinges,'' and ``toggle switch.'' These cases do not target a small hand-verified set; they test the same behavior at larger cardinalities by checking that the resolver returns multiple matching part numbers instead of inventing a single best answer.
+The multi-match benchmark evaluates whether the resolver preserves alternatives for under-specified descriptions rather than forcing a single choice. The 50 cases cover two common forms of ambiguity. In 25 controlled cases, we start from successful exact cases, collect the live schema rows around the target, and remove one discriminator from the description. This creates a new description with a known matching set, usually two to four parts, computed from the same rendered catalog rows. The other 25 cases use broader descriptions such as ``double sided tape,'' ``ball bearing,'' ``door hinges,'' and ``toggle switch.'' These test the same behavior at larger cardinalities. A multi-match case passes when the resolver returns the matching set for controlled cases, or returns multiple matching part numbers for broad cases, without inventing a single best answer.
 
 \subsection{No-Match Part Descriptions}
 
@@ -156,31 +154,26 @@ The no-match benchmark evaluates whether the resolver can return an empty set wh
 \begin{figure*}[t]
 \centering
 \begin{tikzpicture}[
-  outcome/.style={draw, rounded corners=2pt, fill=black!3, minimum width=3.75cm, minimum height=2.2cm, align=center, inner sep=4pt}
+  outcome/.style={draw, rounded corners=2pt, fill=black!3, minimum width=4.25cm, minimum height=2.2cm, align=center, inner sep=4pt}
 ]
 \node[outcome] (exact) at (0,0) {
   {\bfseries\small Exact}\\[2pt]
   {\bfseries\Large 250/250}\\[-1pt]
   {\scriptsize one held-out part recovered}
 };
-\node[outcome] (multi) at (4.05,0) {
-  {\bfseries\small Known multi-match}\\[2pt]
-  {\bfseries\Large 25/25}\\[-1pt]
-  {\scriptsize expected part set recovered}
+\node[outcome] (multi) at (4.75,0) {
+  {\bfseries\small Multi-match}\\[2pt]
+  {\bfseries\Large 50/50}\\[-1pt]
+  {\scriptsize alternatives preserved}
 };
-\node[outcome] (none) at (8.10,0) {
+\node[outcome] (none) at (9.50,0) {
   {\bfseries\small No match}\\[2pt]
   {\bfseries\Large 25/25}\\[-1pt]
   {\scriptsize empty set returned}
 };
-\node[outcome] (broad) at (12.15,0) {
-  {\bfseries\small Broad multi-match}\\[2pt]
-  {\bfseries\Large 25/25}\\[-1pt]
-  {\scriptsize multiple parts returned}
-};
-\node[font=\scriptsize, align=center] at (6.075,-1.55) {All completed benchmark regimes returned the expected match-set cardinality and contents.};
+\node[font=\scriptsize, align=center] at (4.75,-1.55) {All completed benchmark regimes returned the expected match-set behavior.};
 \end{tikzpicture}
-\caption{Benchmark outcome summary. The resolver returns one part for sufficiently specific descriptions, all expected alternatives for known multi-match descriptions, no parts for impossible descriptions, and multiple parts for broad under-specified descriptions.}
+\caption{Benchmark outcome summary. The resolver returns one part for sufficiently specific descriptions, preserves alternatives for under-specified descriptions, and returns no parts for impossible descriptions.}
 \label{fig:benchmark-outcomes}
 \end{figure*}
 
@@ -231,7 +224,7 @@ The absence of misses across these categories is evidence that runtime schema ex
 
 \subsection{Multi-Match Part Recovery Results}
 
-The known multi-match benchmark returned the expected matching set in all 25 cases. The broad multi-match benchmark also returned multiple part numbers for all 25 under-specified category descriptions, showing that the resolver preserves alternatives instead of collapsing broad requests to a single guess.
+The multi-match benchmark passed all 50 under-specified cases. For controlled cases, the resolver returned the expected matching set. For broad category-level descriptions, it returned multiple part numbers rather than collapsing the request to a single guess. These results are reported together because they test the same contract: when a description admits more than one catalog row, the returned object should preserve the alternatives.
 
 \subsection{No-Match Part Description Results}
 
@@ -268,7 +261,7 @@ Future work should evaluate noisier human-written requirements, demonstrate full
 
 \section{Conclusion}
 
-This work turns a practical part-sourcing bottleneck into a measurable tool interface. A design agent can describe a required component, but a downstream product information API needs a part number. The proposed MCP server bridges that gap by headlessly navigating McMaster-Carr, extracting live product schemas, grounding textual constraints to live fields, and filtering rows deterministically. In final benchmark runs, the system recovered 250/250 exact part numbers across 25 catalog categories, returned expected multi-part sets when requirements were under-specified, and returned no part when requirements could not be satisfied. Reliable part sourcing can let agents compose off-the-shelf components into larger designs while automatically attaching BOM entries, CAD, datasheets, prices, live links, and product data.
+This work turns a practical part-sourcing bottleneck into a measurable tool interface. A design agent can describe a required component, but a downstream product information API needs a part number. The proposed MCP server bridges that gap by headlessly navigating McMaster-Carr, extracting live product schemas, grounding textual constraints to live fields, and filtering rows deterministically. In final benchmark runs, the system recovered 250/250 exact part numbers across 25 catalog categories, preserved multi-part alternatives when requirements were under-specified, and returned no part when requirements could not be satisfied. Reliable part sourcing can let agents compose off-the-shelf components into larger designs while automatically attaching BOM entries, CAD, datasheets, prices, live links, and product data.
 
 \bibliographystyle{asmeconf}
 \bibliography{asme_idetc_mcmaster_navigator}
