@@ -541,6 +541,8 @@ def apply_constraint_matchers(rows: list[dict[str, Any]], matchers: list[Any]) -
         comparator = clean_text(str(raw_matcher.get("comparator") or "contains_all_terms"))
         accepted_values_provided = "accepted_values" in raw_matcher
         accepted_values = [clean_text(str(item)) for item in raw_matcher.get("accepted_values", []) if clean_text(str(item))]
+        if not value and accepted_values:
+            value = accepted_values[0]
         if not field or not value:
             continue
         before = len(unique_part_numbers(current))
@@ -698,6 +700,8 @@ def prepare_matcher(matcher: dict[str, Any]) -> tuple[str, str, str, list[str], 
     comparator = clean_text(str(matcher.get("comparator") or "contains_all_terms"))
     accepted_values_provided = "accepted_values" in matcher
     accepted_values = [clean_text(str(item)) for item in matcher.get("accepted_values", []) if clean_text(str(item))]
+    if not value and accepted_values:
+        value = accepted_values[0]
     if not field or not value:
         return None
     if accepted_values_provided and not accepted_values:
@@ -1369,7 +1373,7 @@ def normalize_matcher_output(result: dict[str, Any], clean_matchers: list[dict[s
         if not isinstance(matcher, dict):
             continue
         field = clean_text(str(matcher.get("field", "")))
-        requested_value = clean_text(str(matcher.get("value", "")))
+        requested_value = clean_text(str(matcher.get("value") or matcher.get("constraint") or ""))
         accepted = [
             clean_text(str(value))
             for value in matcher.get("accepted_values", [])
@@ -1378,7 +1382,8 @@ def normalize_matcher_output(result: dict[str, Any], clean_matchers: list[dict[s
         ]
         key = (clean_text(str(matcher.get("constraint", ""))), field, clean_text(str(matcher.get("value", ""))))
         base = by_key.get(key, matcher)
-        normalized_matchers.append({**base, "accepted_values": accepted})
+        normalized_value = clean_text(str(base.get("value") or matcher.get("value") or matcher.get("constraint") or (accepted[0] if accepted else "")))
+        normalized_matchers.append({**base, "value": normalized_value, "accepted_values": accepted})
     if len(normalized_matchers) != len(clean_matchers):
         seen_keys = {
             (clean_text(str(matcher.get("constraint", ""))), clean_text(str(matcher.get("field", ""))), clean_text(str(matcher.get("value", ""))))

@@ -226,6 +226,8 @@ def find_near_ambiguous_case(
         variable_fields = varying_fields(group_rows)
         if not variable_fields:
             continue
+        if has_omitted_selected_option_scoped_common_attribute(group_rows, common, variable_fields):
+            continue
         description = describe_near_case(seed, common)
         case = {
             "case_id": f"near_ambiguous:{target_part}:{stable_case_suffix(common)}",
@@ -325,6 +327,29 @@ def varying_fields(rows: list[dict[str, Any]]) -> list[str]:
     labels = [label for label, values in values_by_label.items() if len(values) > 1]
     labels.sort(key=lambda label: (0 if is_interesting_variation(label) else 1, normalize(label)))
     return labels
+
+
+def has_omitted_selected_option_scoped_common_attribute(
+    rows: list[dict[str, Any]],
+    common: list[dict[str, str]],
+    variable_fields: list[str],
+) -> bool:
+    if "Selected option" not in variable_fields:
+        return False
+    option_norms = {
+        normalize(clean_text(str(row.get("selected_option") or "")))
+        for row in rows
+        if clean_text(str(row.get("selected_option") or ""))
+    }
+    if len(option_norms) < 2:
+        return False
+    for pair in common:
+        if not pair["field"].startswith("attributes."):
+            continue
+        label_norm = normalize(pair["label"])
+        if any(option_norm and (label_norm.startswith(option_norm) or option_norm in label_norm) for option_norm in option_norms):
+            return True
+    return False
 
 
 def is_interesting_variation(label: str) -> bool:

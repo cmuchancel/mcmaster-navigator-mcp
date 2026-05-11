@@ -97,6 +97,38 @@ def test_accepted_values_match_exact_live_field_values():
     assert trace[0]["after_unique_parts"] == 1
 
 
+def test_grounded_accepted_values_filter_even_when_value_is_omitted():
+    rows = [
+        {
+            "part_number": "A1",
+            "family": "Digital Calipers",
+            "groups": ["Mitutoyo", "Mitutoyo Cords"],
+            "attributes": {"Connection": "Mitutoyo Data Out Switch C x 10-Pin Mitutoyo Connector"},
+        },
+        {
+            "part_number": "A2",
+            "family": "Digital Calipers",
+            "groups": ["Mitutoyo", "Other Cords"],
+            "attributes": {"Connection": "USB"},
+        },
+    ]
+    matchers = [
+        {"constraint": "family", "field": "family", "accepted_values": ["Digital Calipers"]},
+        {"constraint": "group", "field": "groups", "accepted_values": ["Mitutoyo Cords"]},
+        {
+            "constraint": "connection",
+            "field": "attributes.Connection",
+            "accepted_values": ["Mitutoyo Data Out Switch C x 10-Pin Mitutoyo Connector"],
+        },
+    ]
+
+    for module in FILTER_MODULES:
+        matches, trace = module.apply_constraint_matchers(rows, matchers)
+
+        assert module.unique_part_numbers(matches) == ["A1"]
+        assert trace[-1]["after_unique_parts"] == 1
+
+
 def test_empty_family_values_do_not_erase_unique_attribute_match():
     rows = [
         {"part_number": "A1", "family": "Toggle Switches", "groups": ["2 Position"], "attributes": {"Terminals": "2"}},
@@ -750,6 +782,46 @@ def test_near_ambiguity_case_omits_one_dynamic_discriminator():
     assert "Finish" in case["omitted_fields"]
     assert "Finish:" not in case["description"]
     assert "Thread Size: 1/4-20" in case["description"]
+
+
+def test_near_ambiguity_generation_skips_cross_option_scoped_common_columns():
+    seed = {"part_number": "A1", "category": "Heating", "seed_query": "cartridge heater"}
+    rows = [
+        {
+            "part_number": "A1",
+            "family": "Cartridge Heaters",
+            "groups": ["Metric"],
+            "selected_option": "120V AC, Single Phase",
+            "attributes": {
+                "Diameter": "6 mm",
+                "Overall Length": "40 mm",
+                "120V AC, Single Phase Current, amp": "0.8",
+                "240V AC, Single Phase Current, amp": "0.4",
+            },
+        },
+        {
+            "part_number": "A2",
+            "family": "Cartridge Heaters",
+            "groups": ["Metric"],
+            "selected_option": "240V AC, Single Phase",
+            "attributes": {
+                "Diameter": "6 mm",
+                "Overall Length": "40 mm",
+                "120V AC, Single Phase Current, amp": "0.8",
+                "240V AC, Single Phase Current, amp": "0.4",
+            },
+        },
+    ]
+
+    case = near_benchmark.find_near_ambiguous_case(
+        seed=seed,
+        rows=rows,
+        pages=[],
+        expected_max_count=4,
+        min_common_constraints=4,
+    )
+
+    assert case is None
 
 
 def test_row_description_uses_target_row_and_selected_option_scope():
