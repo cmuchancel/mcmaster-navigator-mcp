@@ -37,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-run", type=Path, default=ROOT / "benchmark_runs" / "llm_schema_250_general2")
     parser.add_argument("--run-dir", type=Path)
     parser.add_argument("--target-per-kind", type=int, default=100)
+    parser.add_argument("--kinds", default="nonexistent,ambiguous", help="Comma-separated case kinds to build: nonexistent,ambiguous")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--reuse-browser", action="store_true")
     parser.add_argument("--max-pages", type=int, default=8)
@@ -80,7 +81,7 @@ def main() -> None:
         cases = load_jsonl(cases_path)
         print(f"case resume: using {len(cases)} existing cases")
     else:
-        cases = build_cases(args.source_run, target_per_kind=args.target_per_kind)
+        cases = build_cases(args.source_run, target_per_kind=args.target_per_kind, kinds=parse_kinds(args.kinds))
         write_jsonl(cases_path, cases)
         print(f"built {len(cases)} cases")
 
@@ -117,7 +118,17 @@ def main() -> None:
         close_navigator(navigator)
 
 
-def build_cases(source_run: Path, *, target_per_kind: int) -> list[dict[str, Any]]:
+def parse_kinds(raw: str) -> set[str]:
+    kinds = {clean_text(kind).lower() for kind in raw.split(",") if clean_text(kind)}
+    allowed = {"nonexistent", "ambiguous"}
+    unknown = kinds - allowed
+    if unknown:
+        raise ValueError(f"unknown case kinds: {', '.join(sorted(unknown))}")
+    return kinds or allowed
+
+
+def build_cases(source_run: Path, *, target_per_kind: int, kinds: set[str] | None = None) -> list[dict[str, Any]]:
+    kinds = kinds or {"nonexistent", "ambiguous"}
     seeds = load_jsonl(source_run / "seeds.jsonl")
     exact_results = {record["part_number"]: record for record in load_jsonl(source_run / "results.jsonl")}
     selected = stratified(seeds, target_per_kind)
@@ -127,26 +138,28 @@ def build_cases(source_run: Path, *, target_per_kind: int) -> list[dict[str, Any
         exact_description = clean_text(seed.get("description") or exact_results.get(part_number, {}).get("description") or "")
         if not exact_description:
             continue
-        cases.append(
-            {
-                "case_id": f"nonexistent:{part_number}",
-                "kind": "nonexistent",
-                "source_part_number": part_number,
-                "category": seed["category"],
-                "description": make_nonexistent_description(exact_description),
-                "expected_behavior": "not_unique",
-            }
-        )
-        cases.append(
-            {
-                "case_id": f"ambiguous:{part_number}",
-                "kind": "ambiguous",
-                "source_part_number": part_number,
-                "category": seed["category"],
-                "description": make_ambiguous_description(seed),
-                "expected_behavior": "ambiguous_multiple",
-            }
-        )
+        if "nonexistent" in kinds:
+            cases.append(
+                {
+                    "case_id": f"nonexistent:{part_number}",
+                    "kind": "nonexistent",
+                    "source_part_number": part_number,
+                    "category": seed["category"],
+                    "description": make_nonexistent_description(exact_description),
+                    "expected_behavior": "not_unique",
+                }
+            )
+        if "ambiguous" in kinds:
+            cases.append(
+                {
+                    "case_id": f"ambiguous:{part_number}",
+                    "kind": "ambiguous",
+                    "source_part_number": part_number,
+                    "category": seed["category"],
+                    "description": make_ambiguous_description(seed),
+                    "expected_behavior": "ambiguous_multiple",
+                }
+            )
     return cases
 
 
@@ -401,6 +414,7 @@ def summarize(results: list[dict[str, Any]], cases: list[dict[str, Any]], *, tot
         "parameters": {
             "source_run": str(args.source_run),
             "target_per_kind": args.target_per_kind,
+            "kinds": args.kinds,
             "max_pages": args.max_pages,
             "auto_drill_depth": args.auto_drill_depth,
             "max_candidates": args.max_candidates,

@@ -690,6 +690,11 @@ def test_negative_benchmark_retries_browser_start_errors():
     assert negative_benchmark.retryable_result({"status": "ambiguous", "error": ""}) is False
 
 
+def test_negative_benchmark_kind_parser_can_select_only_nonexistent():
+    assert negative_benchmark.parse_kinds("nonexistent") == {"nonexistent"}
+    assert negative_benchmark.parse_kinds("nonexistent, ambiguous") == {"nonexistent", "ambiguous"}
+
+
 def test_near_ambiguity_case_omits_one_dynamic_discriminator():
     seed = {"part_number": "A1", "category": "Fastening", "seed_query": "hex head screw"}
     rows = [
