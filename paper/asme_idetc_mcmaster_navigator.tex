@@ -174,9 +174,11 @@ Total final reported set & 325 & mixed & Task-specific & 325/325 & 100\% & 2,409
 \end{tabularx}
 \end{table*}
 
-Table~\ref{tab:results} reports the final benchmark runs. The exact-recovery benchmark returned exactly one part number for all 250 cases, and that part number was the target in every case. Median exact-case latency was 54.448~s, p90 latency was 85.960~s, p95 latency was 161.763~s, and maximum latency was 466.125~s. Token use averaged 7,449.96 tokens per case, with median 6,962.5, p90 10,563.9, p95 11,183.6, and maximum 18,300.
+Table~\ref{tab:results} summarizes the completed benchmark runs.
 
-The known multi-match benchmark returned candidate counts from 2 to 4, with mean 2.24. The expected matching set coverage was 1.0 in all cases. The no-match benchmark returned empty part-number sets for all 25 cases. The broad multi-match benchmark returned multiple part numbers for all 25 cases. Returned candidate counts ranged from 2 to 456, with median 86 and mean 128.88.
+\subsection{Exact Part Recovery Results}
+
+The exact-recovery benchmark returned exactly one part number for all 250 cases, and that part number was the held-out target in every case. Median exact-case latency was 54.448~s, p90 latency was 85.960~s, p95 latency was 161.763~s, and maximum latency was 466.125~s. Token use averaged 7,449.96 tokens per case, with median 6,962.5, p90 10,563.9, p95 11,183.6, and maximum 18,300.
 
 \begin{table}[t]
 \caption{Exact-recovery category coverage. Each category had 100\% single-part recovery in the final run.}
@@ -216,6 +218,17 @@ Suspending & 7 & 7\\
 \end{table}
 
 The absence of misses across these categories is evidence that runtime schema extraction can handle substantially different product families. It is not proof of complete coverage of every McMaster-Carr page or every possible human description. The strongest defensible claim is that dynamic schema extraction and deterministic filtering can recover exact part numbers across diverse catalog families when descriptions contain sufficient identifying information.
+
+\subsection{Multi-Match Part Recovery Results}
+
+The known multi-match benchmark returned candidate counts from 2 to 4, with mean 2.24. The expected matching set coverage was 1.0 in all cases. The broad multi-match benchmark returned multiple part numbers for all 25 cases. Returned candidate counts ranged from 2 to 456, with median 86 and mean 128.88.
+
+\subsection{No-Match Part Description Results}
+
+The no-match benchmark returned empty part-number sets for all 25 cases. This indicates that, for the tested impossible descriptions, the resolver did not force a nearest-neighbor part when the required constraints could not be satisfied.
+
+\subsection{Parallel Execution for Assemblies}
+% TODO: Add assembly-level parallel sourcing results.
 
 \section{Discussion}
 
