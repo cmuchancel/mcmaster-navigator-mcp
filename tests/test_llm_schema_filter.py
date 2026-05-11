@@ -18,6 +18,11 @@ NEGATIVE_SPEC = importlib.util.spec_from_file_location("negative_ambiguity_bench
 assert NEGATIVE_SPEC is not None and NEGATIVE_SPEC.loader is not None
 negative_benchmark = importlib.util.module_from_spec(NEGATIVE_SPEC)
 NEGATIVE_SPEC.loader.exec_module(negative_benchmark)
+NEAR_BENCHMARK = ROOT / "benchmarks" / "near_ambiguity_benchmark.py"
+NEAR_SPEC = importlib.util.spec_from_file_location("near_ambiguity_benchmark", NEAR_BENCHMARK)
+assert NEAR_SPEC is not None and NEAR_SPEC.loader is not None
+near_benchmark = importlib.util.module_from_spec(NEAR_SPEC)
+NEAR_SPEC.loader.exec_module(near_benchmark)
 FILTER_MODULES = (benchmark, schema_resolver)
 
 
@@ -683,6 +688,63 @@ def test_negative_benchmark_retries_browser_start_errors():
     assert negative_benchmark.retryable_result(result) is True
     assert negative_benchmark.retryable_result({"status": "error", "error": "TypeError: bad code"}) is False
     assert negative_benchmark.retryable_result({"status": "ambiguous", "error": ""}) is False
+
+
+def test_near_ambiguity_case_omits_one_dynamic_discriminator():
+    seed = {"part_number": "A1", "category": "Fastening", "seed_query": "hex head screw"}
+    rows = [
+        {
+            "part_number": "A1",
+            "family": "Hex Head Screws",
+            "groups": ["Steel"],
+            "selected_option": "",
+            "attributes": {
+                "Thread Size": "1/4-20",
+                "Length": '1"',
+                "Head Width": '7/16"',
+                "Finish": "Zinc-Plated",
+            },
+        },
+        {
+            "part_number": "A2",
+            "family": "Hex Head Screws",
+            "groups": ["Steel"],
+            "selected_option": "",
+            "attributes": {
+                "Thread Size": "1/4-20",
+                "Length": '1"',
+                "Head Width": '7/16"',
+                "Finish": "Plain",
+            },
+        },
+        {
+            "part_number": "A3",
+            "family": "Hex Head Screws",
+            "groups": ["Steel"],
+            "selected_option": "",
+            "attributes": {
+                "Thread Size": "5/16-18",
+                "Length": '1"',
+                "Head Width": '1/2"',
+                "Finish": "Zinc-Plated",
+            },
+        },
+    ]
+
+    case = near_benchmark.find_near_ambiguous_case(
+        seed=seed,
+        rows=rows,
+        pages=[],
+        expected_max_count=4,
+        min_common_constraints=4,
+    )
+
+    assert case is not None
+    assert case["expected_part_numbers"] == ["A1", "A2"]
+    assert case["expected_count"] == 2
+    assert "Finish" in case["omitted_fields"]
+    assert "Finish:" not in case["description"]
+    assert "Thread Size: 1/4-20" in case["description"]
 
 
 def test_row_description_uses_target_row_and_selected_option_scope():
