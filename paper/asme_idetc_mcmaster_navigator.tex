@@ -51,12 +51,7 @@ Catalog-grounded part retrieval is challenging because industrial catalogs exhib
 
 We present a dynamic catalog-grounding method exposed through a Model Context Protocol (\mcp{}) server. Given a textual mechanical component description, the server returns the set of part numbers whose live catalog rows satisfy the grounded constraints. The system derives catalog search queries internally, renders live catalog pages, extracts product rows and visible column names, summarizes the live schema, aligns requested constraints with live fields and values, and filters rows programmatically. The language model serves as a schema-alignment component that produces grounded field-value matchers for the currently rendered catalog page. Once part numbers are recovered, existing product-data APIs can automatically attach live links, price information, datasheets, and CAD files to generated component or assembly descriptions.
 
-Our main contributions are:
-\begin{enumerate}[leftmargin=*]
-  \item a reusable \mcp{} server for headless McMaster-Carr navigation, rendered schema extraction, and exact-part resolution;
-  \item a dynamic schema-grounding method that maps textual requirements to live catalog fields and filters rows using runtime product schemas; and
-  \item a part-number retrieval contract that returns all catalog parts satisfying the requirement for downstream product-data, CAD, datasheet, and BOM retrieval.
-\end{enumerate}
+The contribution of this work is an open-source \mcp{} server that takes a textual mechanical component description and returns the matching McMaster-Carr part numbers. The server packages headless rendered-page navigation, runtime product-schema extraction, language-model schema alignment, and deterministic row filtering behind a tool interface that can be called by engineering agents.
 
 \section{Related Work}
 
