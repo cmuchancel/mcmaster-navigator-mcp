@@ -768,6 +768,19 @@ def test_empty_accepted_values_count_as_ungrounded_constraints():
     ) is False
 
 
+def test_broad_taxonomy_synonym_stays_ambiguous_when_not_strict():
+    mapped = {
+        "matchers": [{"field": "family", "value": "cartridge heater", "accepted_values": []}],
+        "unmapped_constraints": [],
+    }
+
+    assert schema_resolver.broad_taxonomy_request_should_remain_ambiguous("cartridge heater", mapped) is True
+    assert schema_resolver.broad_taxonomy_request_should_remain_ambiguous(
+        "Required exact constraint: material must be unobtainium.", mapped
+    ) is False
+    assert schema_resolver.broad_taxonomy_request_should_remain_ambiguous('cartridge heater 1/2" diameter', mapped) is False
+
+
 def test_broad_family_only_request_stays_ambiguous_after_accidental_unique_filter():
     rows = [
         {"part_number": "2498N11", "family": "Welding Clamps", "groups": ["Fixed Jaw"], "attributes": {}},

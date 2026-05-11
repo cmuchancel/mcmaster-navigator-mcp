@@ -19,6 +19,7 @@ LITERAL_IDENTIFIER_RE = re.compile(
     r"(?:[A-Z]+\d[A-Z0-9./-]*|\d+[A-Z][A-Z0-9./-]*|\d+(?:[-/][A-Z0-9]+)+|[A-Z0-9]+(?:[-/][A-Z0-9]+)+)\b",
     re.IGNORECASE,
 )
+STRICT_REQUIREMENT_RE = re.compile(r"\b(required|must|shall|exact constraint|exact requirement|only return)\b", re.IGNORECASE)
 
 
 class BudgetExceeded(RuntimeError):
@@ -238,7 +239,11 @@ def resolve_exact_part_dynamic(
         if ambiguity_trace:
             filter_trace.append(ambiguity_trace)
         forced_unresolved = False
-        if len(returned_parts) > 1 and has_unmapped_or_ungrounded_constraints(mapped):
+        if (
+            len(returned_parts) > 1
+            and has_unmapped_or_ungrounded_constraints(mapped)
+            and not broad_taxonomy_request_should_remain_ambiguous(description, mapped)
+        ):
             unmapped_judgement = llm_judge_unmapped_constraints(
                 client,
                 description=description,
@@ -1009,6 +1014,22 @@ def has_unmapped_or_ungrounded_constraints(mapped: dict[str, Any]) -> bool:
         if not accepted_values:
             return True
     return False
+
+
+def broad_taxonomy_request_should_remain_ambiguous(description: str, mapped: dict[str, Any]) -> bool:
+    if STRICT_REQUIREMENT_RE.search(description) or LITERAL_IDENTIFIER_RE.search(description) or re.search(r"\d", description):
+        return False
+    if mapped.get("unmapped_constraints"):
+        return False
+    matchers = [matcher for matcher in mapped.get("matchers", []) if isinstance(matcher, dict)]
+    if not matchers:
+        return True
+    taxonomy_fields = {"family", "groups", "row_text"}
+    for matcher in matchers:
+        field = clean_text(str(matcher.get("field", "")))
+        if field not in taxonomy_fields:
+            return False
+    return True
 
 
 def row_result(row: dict[str, Any]) -> dict[str, Any]:
