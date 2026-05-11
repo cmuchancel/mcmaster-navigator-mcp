@@ -15,7 +15,6 @@
 
 \newcommand{\mcp}{MCP}
 \newcommand{\tool}[1]{\texttt{#1}}
-\newcommand{\status}[1]{\texttt{#1}}
 
 \begin{document}
 
@@ -39,7 +38,7 @@
 \keywords{AI engineering agents, design automation, part sourcing, model context protocol, catalog grounding, bill of materials, CAD retrieval}
 
 \begin{abstract}
-AI engineering agents are beginning to generate mechanical part and component descriptions from textual requirements, but these outputs are difficult to build when they are not grounded in existing, sourceable, trusted catalog parts. Product-data APIs can provide live links, prices, datasheets, and CAD files once part numbers are known, but they do not solve the upstream problem of converting a component description into the correct part-number set. We present an open-source Model Context Protocol server for headless navigation of McMaster-Carr that converts sufficiently detailed component descriptions into exact catalog part numbers. The system does not rely on a hand-coded ontology of catalog attributes. Instead, it renders live catalog pages, extracts visible product-table schemas, uses a language model to map requested constraints onto live field names and values, and then performs deterministic row filtering. The output is cardinality-aware: one matching part is returned as unique, multiple matching parts are returned as ambiguous, and unsatisfied requirements return unresolved. In final benchmark runs, the system recovered 250/250 exact part numbers across 25 catalog categories, returned ambiguity rather than false unique selections in 50/50 ambiguity cases, and returned unresolved in 25/25 nonexistent cases. By making part sourcing callable by agents, the method enables downstream workflows in which assemblies are crafted from off-the-shelf parts and automatically linked to product data, prices, datasheets, CAD, and bills of materials.
+AI engineering agents are beginning to generate mechanical part and component descriptions from textual requirements, but these outputs are difficult to build when they are not grounded in existing, sourceable, trusted catalog parts. Product-data APIs can provide live links, prices, datasheets, and CAD files once part numbers are known, but they do not solve the upstream problem of converting a component description into the correct part-number set. We present an open-source Model Context Protocol server for headless navigation of McMaster-Carr that converts sufficiently detailed component descriptions into matching catalog part numbers. The system does not rely on a hand-coded ontology of catalog attributes. Instead, it renders live catalog pages, extracts visible product-table schemas, uses a language model to map requested constraints onto live field names and values, and then performs deterministic row filtering. The output is simply the set of catalog parts that satisfy the grounded description. In final benchmark runs, the system recovered 250/250 exact part numbers across 25 catalog categories, returned the expected multi-part sets in 50/50 under-specified cases, and returned no part in 25/25 nonexistent cases. By making part sourcing callable by agents, the method enables downstream workflows in which assemblies are crafted from off-the-shelf parts and automatically linked to product data, prices, datasheets, CAD, and bills of materials.
 \end{abstract}
 
 \section{Introduction}
@@ -48,15 +47,15 @@ AI engineering agents are increasingly being used to generate mechanical part re
 
 The status quo separates broad catalog search from product-data retrieval. McMaster-Carr is a widely used mechanical component catalog, and its Product Information API retrieves product information, live links, prices, images, CAD, and datasheets once a subscribed part number is known~\cite{mcmasterapi}. Existing McMaster-Carr agent tooling also supports search and part-number lookup, but it does not provide a general exact-part resolver that navigates rendered catalog pages, interprets live product-table schemas, and returns the full set of parts satisfying a textual requirement. As a result, the most valuable downstream outputs remain gated on a missing upstream step: discovering the part number.
 
-The gap is challenging because industrial catalogs are not organized around a single fixed schema. A screw might be filtered by material, thread size, length, drive style, package quantity, and finish. A switch might be filtered by circuit, terminal count, maintained or momentary action, panel thickness, voltage, and terminal style. A conveyor roller, spring, hinge, tape, bearing, or filter has a different set of discriminating fields. A general system cannot be built by hard-coding every possible catalog attribute, and a ranked answer is not sufficient for exact procurement: if the description identifies one part, the system should return one part; if it identifies multiple parts, it should return the matching set; if it identifies none, it should return no part.
+The gap is challenging because industrial catalogs are not organized around a single fixed schema. A screw might be filtered by material, thread size, length, drive style, package quantity, and finish. A switch might be filtered by circuit, terminal count, maintained or momentary action, panel thickness, voltage, and terminal style. A conveyor roller, spring, hinge, tape, bearing, or filter has a different set of discriminating fields. A general system cannot be built by hard-coding every possible catalog attribute, and a ranked answer is not sufficient for exact procurement. The correct output is the complete set of catalog rows that satisfy the description.
 
-In this work, we present a dynamic catalog-grounding method exposed through a Model Context Protocol (\mcp{}) server. The input is a textual mechanical component description, optionally with a broad search hint, and the output is a structured part-number result: \status{unique} when exactly one catalog part number satisfies the grounded constraints, \status{ambiguous} when multiple part numbers satisfy them, \status{unresolved} when the required constraints cannot be satisfied or grounded, and \status{error} for infrastructure failures. The system renders the current catalog page, extracts product rows and visible column names, summarizes the live schema, uses a language model only to align requested constraints with those live fields and values, and then filters rows programmatically. The language model is not asked to hallucinate or rank part numbers; it is asked to produce grounded matchers against fields actually present on the page. Once part numbers are recovered, existing product-data APIs can automatically attach live links, price information, datasheets, and CAD files to generated component or assembly descriptions.
+In this work, we present a dynamic catalog-grounding method exposed through a Model Context Protocol (\mcp{}) server. The input is a textual mechanical component description, optionally with a broad search hint, and the output is the set of part numbers whose live catalog rows satisfy the grounded constraints. The system renders the current catalog page, extracts product rows and visible column names, summarizes the live schema, uses a language model only to align requested constraints with those live fields and values, and then filters rows programmatically. The language model is not asked to hallucinate or rank part numbers; it is asked to produce grounded matchers against fields actually present on the page. Once part numbers are recovered, existing product-data APIs can automatically attach live links, price information, datasheets, and CAD files to generated component or assembly descriptions.
 
 Our main contributions are:
 \begin{enumerate}[leftmargin=*]
   \item a reusable \mcp{} server for headless McMaster-Carr navigation, rendered schema extraction, and exact-part resolution;
   \item a dynamic schema-grounding method that maps textual requirements to live catalog fields and filters rows without a hand-coded catalog ontology; and
-  \item a cardinality-aware part-number contract that preserves unique, ambiguous, and unresolved outcomes for downstream product-data, CAD, datasheet, and BOM retrieval.
+  \item a part-number retrieval contract that returns all catalog parts satisfying the requirement for downstream product-data, CAD, datasheet, and BOM retrieval.
 \end{enumerate}
 
 \section{Background and Related Work}
@@ -75,7 +74,7 @@ McMaster-Carr's Product Information API is available to approved customers and i
 
 \subsection{Existing McMaster-Carr Agent Tooling}
 
-A prior public repository, \tool{mjbraun/mcmaster-agent}, exposes an MCP server for searching McMaster-Carr and looking up product information from part numbers~\cite{mcmasteragent}. Its documentation describes product lookup, search, URL generation, SeleniumBase UC mode, cookie persistence, and a limitation that a visible browser window may briefly appear. That tool is useful for basic search and product lookup. The work reported here differs in three ways: it is headless-only, it exposes stateful navigation and schema extraction, and its exact-part resolver decides result cardinality by dynamically filtering live catalog schemas.
+A prior public repository, \tool{mjbraun/mcmaster-agent}, exposes an MCP server for searching McMaster-Carr and looking up product information from part numbers~\cite{mcmasteragent}. Its documentation describes product lookup, search, URL generation, SeleniumBase UC mode, cookie persistence, and a limitation that a visible browser window may briefly appear. That tool is useful for basic search and product lookup. The work reported here differs in three ways: it is headless-only, it exposes stateful navigation and schema extraction, and its resolver returns the set of part numbers that satisfy dynamically filtered live catalog schemas.
 
 \section{System Design}
 
@@ -83,7 +82,7 @@ A prior public repository, \tool{mjbraun/mcmaster-agent}, exposes an MCP server 
 
 The package exposes a Python MCP server over stdio. The main user-facing tool is \tool{mcmaster\_find\_exact\_part}; the remaining tools expose the browser and extraction state needed for inspection, recovery, and agent-driven navigation when a first search page is insufficient. The public tools are:
 \begin{itemize}[leftmargin=*]
-  \item \tool{mcmaster\_find\_exact\_part}: resolve a detailed text description to a unique, ambiguous, unresolved, or error result;
+  \item \tool{mcmaster\_find\_exact\_part}: resolve a detailed text description to the matching set of catalog part numbers;
   \item \tool{mcmaster\_extract\_schema}: open or search a page and return dynamically extracted filters, table columns, row attributes, and part-number rows;
   \item \tool{mcmaster\_search}, \tool{mcmaster\_open}, \tool{mcmaster\_follow\_link}, \tool{mcmaster\_current\_page}, and \tool{mcmaster\_back}: provide stateful headless navigation through rendered pages;
   \item \tool{mcmaster\_find\_parts}: broad search returning part numbers found during rendered search/category navigation; and
@@ -100,7 +99,7 @@ The browser is isolated by default with a temporary Chrome profile. The server s
 
 \subsection{Dynamic Exact-Part Resolution}
 
-Figure~\ref{fig:pipeline} summarizes the exact-part resolver. The resolver normalizes the description into broad search roots and literal constraints, searches the generated roots headlessly, extracts rows from product hits and schema tables, summarizes the live schema, asks the language model to map requested constraints to live fields and accepted values, and applies the resulting matchers with Python row filtering. If filtering conflicts with the live schema, the language model repairs the mapping from the extracted field/value summary. For a single remaining part, the resolver runs a final strict verification check against the selected row. If required constraints are missing or contradicted, it returns \status{unresolved} instead of \status{unique}.
+Figure~\ref{fig:pipeline} summarizes the exact-part resolver. The resolver normalizes the description into broad search roots and literal constraints, searches the generated roots headlessly, extracts rows from product hits and schema tables, summarizes the live schema, asks the language model to map requested constraints to live fields and accepted values, and applies the resulting matchers with Python row filtering. If filtering conflicts with the live schema, the language model repairs the mapping from the extracted field/value summary. If one row remains, the resolver runs a final strict verification check against that row. If required constraints are missing or contradicted, the row is removed from the result set.
 
 \begin{figure}[t]
 \centering
@@ -112,9 +111,9 @@ $\rightarrow$ headless rendered pages
 $\rightarrow$ live rows and schema fields
 $\rightarrow$ LLM field/value matchers
 $\rightarrow$ deterministic row filtering
-$\rightarrow$ \status{unique}, \status{ambiguous}, or \status{unresolved}.
+$\rightarrow$ matching part-number set.
 \end{minipage}}
-\caption{Dynamic exact-part resolution. The language model maps constraints to live page fields; Python filtering determines the returned part-number set.}
+\caption{Dynamic exact-part resolution. The language model maps constraints to live page fields; Python filtering determines the returned set of matching part numbers.}
 \label{fig:pipeline}
 \end{figure}
 
@@ -122,7 +121,7 @@ This design lets the system generalize across product families because the catal
 
 \subsection{Assembly-Level Use Case}
 
-The core problem is part sourcing. Assembly workflows become possible by treating each off-the-shelf line item as an independent exact-part resolution problem. A component requirement is sent to \tool{mcmaster\_find\_exact\_part}. If the result is unique, the part number is forwarded to the product information pipeline for product data, live links, price, image, CAD, and datasheet retrieval. If the result is ambiguous, the matching part numbers and unresolved discriminators are returned to the engineer or to a higher-level agent for clarification. If the result is unresolved, the line item is flagged as impossible or underspecified.
+The core problem is part sourcing. Assembly workflows become possible by treating each off-the-shelf line item as an independent exact-part resolution problem. A component requirement is sent to \tool{mcmaster\_find\_exact\_part}, and the returned matching set is carried forward. Downstream systems can retrieve product data, live links, price, image, CAD, and datasheet information for returned part numbers, preserve alternatives for later selection, or revise line items whose descriptions do not match any catalog row.
 
 This line-item independence allows parallel sourcing agents. Compatibility checking can be layered above the resolver, but the core tool intentionally solves the narrower and measurable problem of finding the catalog part numbers that match stated requirements.
 
@@ -132,13 +131,13 @@ This line-item independence allows parallel sourcing agents. Compatibility check
 
 The exact recovery benchmark begins with known part numbers sampled from rendered McMaster-Carr search/category pages. Seed queries cover broad catalog areas including door hinges, toggle switches, welding clamps, socket head cap screws, air filter cartridges, drawer slides, compression springs, cartridge heaters, grease fittings, digital calipers, PVC tubing, timing belt pulleys, eye bolts, aluminum bar, wire rope clips, bearings, guide rails, pneumatic cylinders, double-sided tape, beakers, motors, and conveyor rollers.
 
-For each sampled part number, the benchmark builds a textual description from the rendered product page or product-table row. The part number is withheld from the resolver. A case is counted correct if the returned set contains the target part number and the resolver reports a unique single part. The final exact-recovery run used 250 cases, 25 catalog categories, \tool{gpt-5.4-mini}, page budget 8, auto-drill depth 2, maximum schema rows 700, and two LLM search roots.
+For each sampled part number, the benchmark builds a textual description from the rendered product page or product-table row. The part number is withheld from the resolver. A case is counted correct if the returned set contains exactly one part number and that part number is the target. The final exact-recovery run used 250 cases, 25 catalog categories, \tool{gpt-5.4-mini}, page budget 8, auto-drill depth 2, maximum schema rows 700, and two LLM search roots.
 
-\subsection{Ambiguity and Nonexistent Checks}
+\subsection{Match-Set Size Checks}
 
-The near-ambiguity benchmark starts from successful exact cases, collects live schema rows around the target, then removes one discriminator from the description so that two to four parts are expected to remain. A case passes when the resolver returns \status{ambiguous}, does not select a unique part, includes the original target part, includes all expected matching part numbers, and returns a bounded number of candidates.
+The near multi-match benchmark starts from successful exact cases, collects live schema rows around the target, then removes one discriminator from the description so that two to four parts are expected to remain. A case passes when the resolver returns the expected matching set, includes the original target part, and does not collapse the result to a single part.
 
-The nonexistent benchmark starts from exact descriptions and appends impossible required constraints such as an unobtainable material, impossible color, and impossible size. The broad-ambiguity benchmark gives underspecified category queries such as ``double sided tape,'' ``ball bearing,'' ``door hinges,'' or ``toggle switch.'' These cases test whether the system avoids false unique part selections.
+The nonexistent benchmark starts from exact descriptions and appends impossible required constraints such as an unobtainable material, impossible color, and impossible size. The broad multi-match benchmark gives underspecified category queries such as ``double sided tape,'' ``ball bearing,'' ``door hinges,'' or ``toggle switch.'' These cases test whether the system returns the matching set instead of forcing a single best guess.
 
 \section{Results}
 
@@ -149,29 +148,29 @@ The nonexistent benchmark starts from exact descriptions and appends impossible 
 \scriptsize
 \begin{tabularx}{\textwidth}{@{}p{1.35in}c p{0.62in}X c c r r@{}}
 \toprule
-Evaluation & Cases & Expected status & Pass criterion & Passed & Pass rate & Tokens & Mean s/case\\
+Evaluation & Cases & Expected count & Pass criterion & Passed & Pass rate & Tokens & Mean s/case\\
 \midrule
-Exact single-part recovery & 250 & \status{unique} & Correct target returned as single part & 250/250 & 100\% & 1,862,490 & 71.038\\
-Near ambiguity & 25 & \status{ambiguous} & Expected 2--4 part set, no false unique & 25/25 & 100\% & 187,701 & 64.325\\
-Nonexistent requirements & 25 & \status{unresolved} & No unique part selected & 25/25 & 100\% & 268,293 & 75.348\\
-Broad ambiguity & 25 & \status{ambiguous} & Multiple parts, no false unique & 25/25 & 100\% & 90,950 & 50.654\\
+Exact single-part recovery & 250 & 1 & Target returned as only part & 250/250 & 100\% & 1,862,490 & 71.038\\
+Near multi-match & 25 & 2--4 & Expected matching set returned & 25/25 & 100\% & 187,701 & 64.325\\
+Nonexistent requirements & 25 & 0 & No part returned & 25/25 & 100\% & 268,293 & 75.348\\
+Broad multi-match & 25 & $>1$ & Multiple parts returned & 25/25 & 100\% & 90,950 & 50.654\\
 \midrule
 Total final reported set & 325 & mixed & Task-specific & 325/325 & 100\% & 2,409,434 & --\\
 \bottomrule
 \end{tabularx}
 \end{table*}
 
-Table~\ref{tab:results} reports the final benchmark runs. The exact-recovery benchmark returned \status{unique} for all 250 cases. Median exact-case latency was 54.448~s, p90 latency was 85.960~s, p95 latency was 161.763~s, and maximum latency was 466.125~s. Token use averaged 7,449.96 tokens per case, with median 6,962.5, p90 10,563.9, p95 11,183.6, and maximum 18,300.
+Table~\ref{tab:results} reports the final benchmark runs. The exact-recovery benchmark returned exactly one part number for all 250 cases, and that part number was the target in every case. Median exact-case latency was 54.448~s, p90 latency was 85.960~s, p95 latency was 161.763~s, and maximum latency was 466.125~s. Token use averaged 7,449.96 tokens per case, with median 6,962.5, p90 10,563.9, p95 11,183.6, and maximum 18,300.
 
-The near-ambiguity benchmark returned \status{ambiguous} for all 25 cases. Returned candidate counts ranged from 2 to 4, with mean 2.24. The expected matching set coverage was 1.0 in all cases. The nonexistent benchmark returned \status{unresolved} for all 25 cases, with zero false unique selections. The broad-ambiguity benchmark returned \status{ambiguous} for all 25 cases, also with zero false unique selections. Returned candidate counts ranged from 2 to 456, with median 86 and mean 128.88.
+The near multi-match benchmark returned candidate counts from 2 to 4, with mean 2.24. The expected matching set coverage was 1.0 in all cases. The nonexistent benchmark returned empty part-number sets for all 25 cases. The broad multi-match benchmark returned multiple part numbers for all 25 cases. Returned candidate counts ranged from 2 to 456, with median 86 and mean 128.88.
 
 \begin{table}[t]
-\caption{Exact-recovery category coverage. Each category had 100\% unique recovery in the final run.}
+\caption{Exact-recovery category coverage. Each category had 100\% single-part recovery in the final run.}
 \label{tab:categories}
 \centering
 \begin{tabular}{lrr}
 \toprule
-Category & Cases & Unique\\
+Category & Cases & Single\\
 \midrule
 Adhesives & 8 & 8\\
 Bearings & 8 & 8\\
@@ -210,9 +209,9 @@ The absence of misses across these categories is evidence that runtime schema ex
 
 The benchmark covers product families whose discriminating attributes differ substantially. A static parser with a fixed list of fields would need to know domain-specific names and value formats for hinges, switches, bearings, adhesives, filters, raw materials, pneumatic cylinders, motors, and conveyor rollers. The dynamic approach avoids that requirement. The system only needs a general row representation and a way to align user constraints with fields currently visible on the page.
 
-\subsection{Why Cardinality Matters}
+\subsection{Why Returning the Set Matters}
 
-Procurement workflows need faithful uncertainty. Returning a single best guess for ``ball bearing'' is worse than returning many candidates, because the description does not specify shaft diameter, housing diameter, width, seal type, load capacity, or material. The ambiguity experiments show that the resolver can avoid false precision in both broad and near-exact cases.
+Procurement workflows need faithful part sets. Returning a single best guess for ``ball bearing'' is worse than returning the matching catalog rows, because the description does not specify shaft diameter, housing diameter, width, seal type, load capacity, or material. The multi-match and zero-match experiments show that the resolver can return all matching parts, or none, without false precision.
 
 \subsection{Integration with Product-Data APIs}
 
@@ -232,7 +231,7 @@ Future work should evaluate noisier human-written requirements, demonstrate full
 
 \section{Conclusion}
 
-This work turns a practical part-sourcing bottleneck into a measurable tool interface. A design agent can describe a required component, but a downstream product information API needs a part number. The proposed MCP server bridges that gap by headlessly navigating McMaster-Carr, extracting live product schemas, grounding textual constraints to live fields, and filtering rows deterministically. In final benchmark runs, the system recovered 250/250 exact part numbers across 25 catalog categories and avoided false unique selections in 75 ambiguity and nonexistent cases. Reliable part sourcing can let agents compose off-the-shelf components into larger designs while automatically attaching BOM entries, CAD, datasheets, prices, live links, and product data.
+This work turns a practical part-sourcing bottleneck into a measurable tool interface. A design agent can describe a required component, but a downstream product information API needs a part number. The proposed MCP server bridges that gap by headlessly navigating McMaster-Carr, extracting live product schemas, grounding textual constraints to live fields, and filtering rows deterministically. In final benchmark runs, the system recovered 250/250 exact part numbers across 25 catalog categories, returned expected multi-part sets when requirements were under-specified, and returned no part when requirements could not be satisfied. Reliable part sourcing can let agents compose off-the-shelf components into larger designs while automatically attaching BOM entries, CAD, datasheets, prices, live links, and product data.
 
 \bibliographystyle{asmeconf}
 \bibliography{asme_idetc_mcmaster_navigator}
