@@ -568,7 +568,7 @@ def test_openai_json_client_retries_truncated_json_with_larger_completion_cap():
             def __init__(self):
                 self.api_key = "test"
                 self.model = "fake-model"
-                self.budget = module.TokenBudget(10000)
+                self.usage = module.TokenUsage()
                 self.payload_caps = []
 
             def _request_completion(self, payload):
@@ -598,7 +598,7 @@ def test_openai_json_client_retries_truncated_json_with_larger_completion_cap():
 
         assert result["matchers"][0]["field"] == "groups"
         assert client.payload_caps == [1000, 2000]
-        assert client.budget.used_tokens == 23
+        assert client.usage.used_tokens == 23
 
 
 def test_selected_option_is_applied_before_attribute_matchers():

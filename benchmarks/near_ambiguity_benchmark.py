@@ -68,7 +68,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--llm-max-rows", type=int, default=700)
     parser.add_argument("--llm-max-field-values", type=int, default=160)
     parser.add_argument("--llm-run-token-budget", type=int, default=1_400_000)
-    parser.add_argument("--llm-call-token-budget", type=int, default=2_500_000)
     parser.add_argument("--case-timeout-seconds", type=float, default=600)
     parser.add_argument("--case-retries", type=int, default=2)
     return parser.parse_args()
@@ -452,7 +451,6 @@ def score_case(navigator: McMasterNavigator, case: dict[str, Any], args: argpars
                 max_pages=args.max_pages,
                 auto_drill_depth=args.auto_drill_depth,
                 model=args.llm_model,
-                token_budget_limit=args.llm_call_token_budget,
                 max_searches=args.llm_max_searches,
                 max_rows=args.llm_max_rows,
                 max_field_values=args.llm_max_field_values,

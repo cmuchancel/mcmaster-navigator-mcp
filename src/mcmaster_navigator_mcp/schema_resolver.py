@@ -15,9 +15,7 @@ from .navigator import McMasterNavigator, _order_links_for_query
 from .catalog_text import CATALOG_SEMANTIC_STOPWORDS, derive_search_queries, normalize, term_matches
 
 # Keep public MCP setup simple: normal users only set OPENAI_API_KEY.
-# Research scripts can pass explicit budgets/model names to resolve_exact_part_dynamic().
 DEFAULT_OPENAI_MODEL = "gpt-5.4-mini"
-DEFAULT_TOKEN_BUDGET = 2_500_000
 DEFAULT_MAX_SEARCHES = 2
 DEFAULT_MAX_ROWS = 700
 DEFAULT_MAX_FIELD_VALUES = 160
@@ -30,50 +28,39 @@ LITERAL_IDENTIFIER_RE = re.compile(
 STRICT_REQUIREMENT_RE = re.compile(r"\b(required|must|shall|exact constraint|exact requirement|only return)\b", re.IGNORECASE)
 
 
-class BudgetExceeded(RuntimeError):
-    pass
-
-
-class TokenBudget:
-    def __init__(self, limit: int):
-        self.limit = limit
+class TokenUsage:
+    def __init__(self):
         self.used_tokens = 0
         self.estimated_tokens = 0
         self.calls = 0
 
-    def reserve(self, estimated_tokens: int) -> None:
-        if self.used_tokens + estimated_tokens > self.limit:
-            raise BudgetExceeded(f"next estimated call would exceed token budget ({self.used_tokens}+{estimated_tokens}>{self.limit})")
+    def estimate(self, estimated_tokens: int) -> None:
         self.estimated_tokens += estimated_tokens
 
     def record(self, tokens: int) -> None:
         self.used_tokens += max(tokens, 0)
         self.calls += 1
-        if self.used_tokens > self.limit:
-            raise BudgetExceeded(f"token usage exceeded budget ({self.used_tokens}>{self.limit})")
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "limit": self.limit,
             "used_tokens": self.used_tokens,
-            "estimated_reserved_tokens": self.estimated_tokens,
+            "estimated_tokens": self.estimated_tokens,
             "calls": self.calls,
-            "remaining_tokens": max(self.limit - self.used_tokens, 0),
         }
 
 
 class OpenAIJsonClient:
-    def __init__(self, *, api_key: str, model: str, budget: TokenBudget):
+    def __init__(self, *, api_key: str, model: str, usage: TokenUsage | None = None):
         self.api_key = api_key
         self.model = model
-        self.budget = budget
+        self.usage = usage or TokenUsage()
 
     def complete_json(self, system: str, user: str, *, max_completion_tokens: int = 900) -> dict[str, Any]:
         completion_cap = max_completion_tokens
         last_error = ""
         for attempt in range(3):
             estimated = estimate_tokens(system) + estimate_tokens(user) + completion_cap
-            self.budget.reserve(estimated)
+            self.usage.estimate(estimated)
             payload = {
                 "model": self.model,
                 "messages": [
@@ -88,7 +75,7 @@ class OpenAIJsonClient:
             total_tokens = usage.get("total_tokens")
             if not isinstance(total_tokens, int):
                 total_tokens = estimated
-            self.budget.record(total_tokens)
+            self.usage.record(total_tokens)
             choice = data["choices"][0]
             content = choice["message"]["content"]
             finish_reason = clean_text(str(choice.get("finish_reason") or ""))
@@ -150,7 +137,6 @@ def resolve_exact_part_dynamic(
     max_pages: int = 8,
     auto_drill_depth: int | None = None,
     model: str = DEFAULT_OPENAI_MODEL,
-    token_budget_limit: int = DEFAULT_TOKEN_BUDGET,
     max_searches: int = DEFAULT_MAX_SEARCHES,
     max_rows: int = DEFAULT_MAX_ROWS,
     max_field_values: int = DEFAULT_MAX_FIELD_VALUES,
@@ -160,8 +146,8 @@ def resolve_exact_part_dynamic(
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is required for dynamic schema resolution")
     model = (model or DEFAULT_OPENAI_MODEL).strip()
-    token_budget = TokenBudget(token_budget_limit)
-    client = OpenAIJsonClient(api_key=api_key, model=model, budget=token_budget)
+    token_usage = TokenUsage()
+    client = OpenAIJsonClient(api_key=api_key, model=model, usage=token_usage)
     started = time.time()
     llm_payloads: dict[str, Any] = {}
     pages: list[dict[str, Any]] = []
@@ -315,10 +301,6 @@ def resolve_exact_part_dynamic(
             status = "ambiguous"
         elif not forced_unresolved:
             status = "unresolved"
-    except BudgetExceeded as exc:
-        status = "budget_exceeded"
-        error = str(exc)
-        matches = []
     except Exception as exc:
         status = "error"
         error = f"{type(exc).__name__}: {exc}"
@@ -345,7 +327,7 @@ def resolve_exact_part_dynamic(
             "max_searches": max_searches,
             "max_rows": max_rows,
             "max_field_values": max_field_values,
-            "llm_usage": token_budget.to_dict(),
+            "llm_usage": token_usage.to_dict(),
             "error": error,
             "seconds": round(time.time() - started, 3),
         },

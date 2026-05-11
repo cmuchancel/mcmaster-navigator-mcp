@@ -94,7 +94,7 @@ Do not commit API keys into MCP config files. Prefer exporting `OPENAI_API_KEY` 
 
 ## Tools
 
-- `mcmaster_find_exact_part`: best default when the user supplied enough detail to identify one catalog item. Uses the dynamic schema resolver, requires `OPENAI_API_KEY`, and returns `status: unique`, `ambiguous`, `unresolved`, `budget_exceeded`, or `error`.
+- `mcmaster_find_exact_part`: best default when the user supplied enough detail to identify one catalog item. Uses the dynamic schema resolver, requires `OPENAI_API_KEY`, and returns `status: unique`, `ambiguous`, `unresolved`, or `error`.
 - `mcmaster_find_parts`: broad search. Searches and browses rendered pages, then returns part numbers.
 - `mcmaster_search`: search McMaster and return the rendered page state.
 - `mcmaster_open`: open a URL, path, part number, or search phrase.
