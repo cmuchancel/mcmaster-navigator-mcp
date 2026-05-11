@@ -205,21 +205,30 @@ def find_near_ambiguous_case(
     min_common_constraints: int,
 ) -> dict[str, Any] | None:
     target_part = clean_text(str(seed.get("part_number") or "")).upper()
-    target = next((row for row in rows if clean_text(str(row.get("part_number") or "")).upper() == target_part), None)
-    if target is None:
+    indexed_rows, index_by_key = index_constraint_pairs(rows)
+    target_index = next(
+        (
+            index
+            for index, item in enumerate(indexed_rows)
+            if clean_text(str(item["row"].get("part_number") or "")).upper() == target_part
+        ),
+        None,
+    )
+    if target_index is None:
         return None
-    target_pairs = constraint_pairs(target, rows)
+    target_pairs = indexed_rows[target_index]["pairs"]
     if len(target_pairs) < min_common_constraints:
         return None
     candidates: list[tuple[tuple[int, int, int, int], dict[str, Any]]] = []
-    for neighbor in rows:
+    for item in indexed_rows:
+        neighbor = item["row"]
         neighbor_part = clean_text(str(neighbor.get("part_number") or "")).upper()
         if not neighbor_part or neighbor_part == target_part:
             continue
-        common = common_pairs(target_pairs, constraint_pairs(neighbor, rows))
+        common = common_pairs(target_pairs, item["pairs"])
         if len(common) < min_common_constraints or not has_taxonomy_anchor(common):
             continue
-        group_rows = [row for row in rows if row_matches_pairs(row, common, rows)]
+        group_rows = [indexed_rows[index]["row"] for index in matching_row_indices(common, index_by_key)]
         group_parts = unique_part_numbers(group_rows)
         if target_part not in group_parts or not (2 <= len(group_parts) <= expected_max_count):
             continue
@@ -263,6 +272,26 @@ def find_near_ambiguous_case(
         return None
     candidates.sort(key=lambda item: item[0])
     return candidates[0][1]
+
+
+def index_constraint_pairs(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, set[int]]]:
+    indexed_rows: list[dict[str, Any]] = []
+    index_by_key: dict[str, set[int]] = defaultdict(set)
+    for index, row in enumerate(rows):
+        pairs = constraint_pairs(row, rows)
+        keys = {pair["key"] for pair in pairs}
+        indexed_rows.append({"row": row, "pairs": pairs, "keys": keys})
+        for key in keys:
+            index_by_key[key].add(index)
+    return indexed_rows, index_by_key
+
+
+def matching_row_indices(common: list[dict[str, str]], index_by_key: dict[str, set[int]]) -> list[int]:
+    key_sets = [index_by_key.get(pair["key"], set()) for pair in common]
+    if not key_sets or any(not key_set for key_set in key_sets):
+        return []
+    matched = set.intersection(*key_sets)
+    return sorted(matched)
 
 
 def constraint_pairs(row: dict[str, Any], peer_rows: list[dict[str, Any]] | None = None) -> list[dict[str, str]]:
