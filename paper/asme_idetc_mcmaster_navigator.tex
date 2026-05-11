@@ -118,17 +118,37 @@ This line-item independence allows parallel sourcing agents. Compatibility check
 
 \section{Evaluation Methodology}
 
+The evaluation measures whether the resolver returns the correct catalog match set from text rather than a plausible ranked search result. We therefore test three regimes: descriptions that should identify one known catalog part, descriptions that intentionally leave several valid alternatives, and descriptions whose required constraints cannot be satisfied.
+
 \subsection{Exact Part Recovery}
 
-The exact recovery benchmark begins with known part numbers sampled from rendered McMaster-Carr search/category pages. Seed queries cover broad catalog areas including door hinges, toggle switches, welding clamps, socket head cap screws, air filter cartridges, drawer slides, compression springs, cartridge heaters, grease fittings, digital calipers, PVC tubing, timing belt pulleys, eye bolts, aluminum bar, wire rope clips, bearings, guide rails, pneumatic cylinders, double-sided tape, beakers, motors, and conveyor rollers.
+The exact recovery benchmark evaluates precision when the description is sufficiently specific to identify one catalog row. We begin with real McMaster-Carr part numbers, extract the visible catalog attributes for each part from rendered product pages or table rows, transform those attributes into a textual component description, remove the part number, and ask the resolver to recover the matching part-number set. A case is counted correct only when the returned set contains exactly one part number and that part number is the held-out target.
 
-For each sampled part number, the benchmark builds a textual description from the rendered product page or product-table row. The part number is withheld from the resolver. A case is counted correct if the returned set contains exactly one part number and that part number is the target. The final exact-recovery run used 250 cases, 25 catalog categories, \tool{gpt-5.4-mini}, page budget 8, auto-drill depth 2, maximum schema rows 700, and two internally generated search roots.
+\begin{figure}[t]
+\centering
+\fbox{\begin{minipage}{0.94\columnwidth}
+\footnotesize
+\raggedright
+\textbf{Tool call:} \tool{mcmaster\_find\_exact\_part}\\
+\textbf{Input:} 316 stainless steel polished surface-mount hinge with holes; nonremovable pin; 2-3/8 in by 1-3/16 in leaves; 0.315 in leaf thickness; 180$^\circ$ range; four holes; fasteners not included.\\
+\textbf{Returned match set:} \{1488A1\}\\
+\textbf{Held-out target:} 1488A1
+\end{minipage}}
+\caption{Representative exact-recovery case. The prompt omits the part number.}
+\label{fig:exact-example}
+\end{figure}
 
-\subsection{Match-Set Size Checks}
+The final exact-recovery run used 250 cases sampled across 25 catalog categories, later summarized in Table~\ref{tab:categories}. The run used \tool{gpt-5.4-mini}, page budget 8, auto-drill depth 2, maximum schema rows 700, and two internally generated search roots.
 
-The near multi-match benchmark starts from successful exact cases, collects live schema rows around the target, then removes one discriminator from the description so that two to four parts are expected to remain. A case passes when the resolver returns the expected matching set, includes the original target part, and does not collapse the result to a single part.
+\subsection{Multi-Match Part Recovery}
 
-The nonexistent benchmark starts from exact descriptions and appends impossible required constraints such as an unobtainable material, impossible color, and impossible size. The broad multi-match benchmark gives underspecified category queries such as ``double sided tape,'' ``ball bearing,'' ``door hinges,'' or ``toggle switch.'' These cases test whether the system returns the matching set instead of forcing a single best guess.
+The multi-match benchmark evaluates whether the resolver returns all parts that satisfy an under-specified description rather than forcing a single choice. Starting from successful exact cases, we collected the live schema rows around the target and removed one discriminator from the description. This creates a new description with a known matching set, usually two to four parts, computed from the same rendered catalog rows. A case passes when the resolver returns that expected part-number set and includes the original target as one member of the set.
+
+We also include broad multi-match descriptions such as ``double sided tape,'' ``ball bearing,'' ``door hinges,'' and ``toggle switch.'' These cases do not target a small hand-verified set; they test the same behavior at larger cardinalities by checking that the resolver returns multiple matching part numbers instead of inventing a single best answer.
+
+\subsection{No-Match Part Descriptions}
+
+The no-match benchmark evaluates whether the resolver can return an empty set when the description contains requirements that no visible McMaster-Carr row satisfies. These cases start from exact descriptions and add impossible required constraints such as an unobtainable material, impossible color, or impossible size. A case passes only when the resolver returns no part numbers. This tests the failure mode most important for automated sourcing: the tool should report that no catalog match was found rather than selecting a nearby but incorrect part.
 
 \section{Experimental Results}
 
@@ -142,9 +162,9 @@ The nonexistent benchmark starts from exact descriptions and appends impossible 
 Evaluation & Cases & Expected count & Pass criterion & Passed & Pass rate & Tokens & Mean s/case\\
 \midrule
 Exact single-part recovery & 250 & 1 & Target returned as only part & 250/250 & 100\% & 1,862,490 & 71.038\\
-Near multi-match & 25 & 2--4 & Expected matching set returned & 25/25 & 100\% & 187,701 & 64.325\\
-Nonexistent requirements & 25 & 0 & No part returned & 25/25 & 100\% & 268,293 & 75.348\\
-Broad multi-match & 25 & $>1$ & Multiple parts returned & 25/25 & 100\% & 90,950 & 50.654\\
+Known multi-match recovery & 25 & 2--4 & Expected matching set returned & 25/25 & 100\% & 187,701 & 64.325\\
+No-match descriptions & 25 & 0 & No part returned & 25/25 & 100\% & 268,293 & 75.348\\
+Broad multi-match checks & 25 & $>1$ & Multiple parts returned & 25/25 & 100\% & 90,950 & 50.654\\
 \midrule
 Total final reported set & 325 & mixed & Task-specific & 325/325 & 100\% & 2,409,434 & --\\
 \bottomrule
@@ -153,7 +173,7 @@ Total final reported set & 325 & mixed & Task-specific & 325/325 & 100\% & 2,409
 
 Table~\ref{tab:results} reports the final benchmark runs. The exact-recovery benchmark returned exactly one part number for all 250 cases, and that part number was the target in every case. Median exact-case latency was 54.448~s, p90 latency was 85.960~s, p95 latency was 161.763~s, and maximum latency was 466.125~s. Token use averaged 7,449.96 tokens per case, with median 6,962.5, p90 10,563.9, p95 11,183.6, and maximum 18,300.
 
-The near multi-match benchmark returned candidate counts from 2 to 4, with mean 2.24. The expected matching set coverage was 1.0 in all cases. The nonexistent benchmark returned empty part-number sets for all 25 cases. The broad multi-match benchmark returned multiple part numbers for all 25 cases. Returned candidate counts ranged from 2 to 456, with median 86 and mean 128.88.
+The known multi-match benchmark returned candidate counts from 2 to 4, with mean 2.24. The expected matching set coverage was 1.0 in all cases. The no-match benchmark returned empty part-number sets for all 25 cases. The broad multi-match benchmark returned multiple part numbers for all 25 cases. Returned candidate counts ranged from 2 to 456, with median 86 and mean 128.88.
 
 \begin{table}[t]
 \caption{Exact-recovery category coverage. Each category had 100\% single-part recovery in the final run.}
