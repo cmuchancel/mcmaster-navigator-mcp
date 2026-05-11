@@ -208,7 +208,7 @@ def find_near_ambiguous_case(
     target = next((row for row in rows if clean_text(str(row.get("part_number") or "")).upper() == target_part), None)
     if target is None:
         return None
-    target_pairs = constraint_pairs(target)
+    target_pairs = constraint_pairs(target, rows)
     if len(target_pairs) < min_common_constraints:
         return None
     candidates: list[tuple[tuple[int, int, int, int], dict[str, Any]]] = []
@@ -216,10 +216,10 @@ def find_near_ambiguous_case(
         neighbor_part = clean_text(str(neighbor.get("part_number") or "")).upper()
         if not neighbor_part or neighbor_part == target_part:
             continue
-        common = common_pairs(target_pairs, constraint_pairs(neighbor))
+        common = common_pairs(target_pairs, constraint_pairs(neighbor, rows))
         if len(common) < min_common_constraints or not has_taxonomy_anchor(common):
             continue
-        group_rows = [row for row in rows if row_matches_pairs(row, common)]
+        group_rows = [row for row in rows if row_matches_pairs(row, common, rows)]
         group_parts = unique_part_numbers(group_rows)
         if target_part not in group_parts or not (2 <= len(group_parts) <= expected_max_count):
             continue
@@ -265,8 +265,9 @@ def find_near_ambiguous_case(
     return candidates[0][1]
 
 
-def constraint_pairs(row: dict[str, Any]) -> list[dict[str, str]]:
+def constraint_pairs(row: dict[str, Any], peer_rows: list[dict[str, Any]] | None = None) -> list[dict[str, str]]:
     pairs: list[dict[str, str]] = []
+    peers = peer_rows or [row]
 
     def add(field: str, label: str, value: str) -> None:
         value = clean_text(value)
@@ -285,7 +286,7 @@ def constraint_pairs(row: dict[str, Any]) -> list[dict[str, str]]:
         for key, value in attributes.items():
             label = clean_text(str(key))
             value_text = clean_text(str(value))
-            if usable_attribute(label, value_text):
+            if usable_attribute(label, value_text) and attribute_applies_to_selected_option(label, selected_option, peers):
                 add(f"attributes.{label}", label, value_text)
     return pairs
 
@@ -294,10 +295,27 @@ def usable_attribute(label: str, value: str) -> bool:
     if not label or not value or normalize(value) in MISSING_VALUE_MARKERS:
         return False
     norm_label = normalize(label)
-    if norm_label in {"each", "per ft", "per pkg", "pkg", "package"}:
+    if norm_label in {"each", "pair", "per ft", "per foot", "per pkg", "per pack", "pkg", "package"}:
         return False
-    if norm_label.endswith(" each") or norm_label.endswith(" per ft") or norm_label.endswith(" per pack"):
+    if norm_label.endswith(" each") or norm_label.endswith(" pair") or norm_label.endswith(" per ft") or norm_label.endswith(" per pack"):
         return False
+    if "price" in norm_label or clean_text(value).startswith("$"):
+        return False
+    return True
+
+
+def attribute_applies_to_selected_option(label: str, selected_option: str, peer_rows: list[dict[str, Any]]) -> bool:
+    if not selected_option:
+        return True
+    label_norm = normalize(label)
+    selected_norm = normalize(selected_option)
+    if label_norm.startswith(selected_norm):
+        return True
+    for row in peer_rows:
+        other_option = clean_text(str(row.get("selected_option") or ""))
+        other_norm = normalize(other_option)
+        if other_norm and other_norm != selected_norm and label_norm.startswith(other_norm):
+            return False
     return True
 
 
@@ -314,15 +332,15 @@ def has_taxonomy_anchor(pairs: list[dict[str, str]]) -> bool:
     return any(pair["field"] in {"family", "groups"} for pair in pairs)
 
 
-def row_matches_pairs(row: dict[str, Any], pairs: list[dict[str, str]]) -> bool:
-    keys = {pair["key"] for pair in constraint_pairs(row)}
+def row_matches_pairs(row: dict[str, Any], pairs: list[dict[str, str]], peer_rows: list[dict[str, Any]] | None = None) -> bool:
+    keys = {pair["key"] for pair in constraint_pairs(row, peer_rows)}
     return all(pair["key"] in keys for pair in pairs)
 
 
 def varying_fields(rows: list[dict[str, Any]]) -> list[str]:
     values_by_label: dict[str, set[str]] = defaultdict(set)
     for row in rows:
-        for pair in constraint_pairs(row):
+        for pair in constraint_pairs(row, rows):
             values_by_label[pair["label"]].add(pair["value"])
     labels = [label for label, values in values_by_label.items() if len(values) > 1]
     labels.sort(key=lambda label: (0 if is_interesting_variation(label) else 1, normalize(label)))

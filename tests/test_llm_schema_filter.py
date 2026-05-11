@@ -784,7 +784,7 @@ def test_near_ambiguity_case_omits_one_dynamic_discriminator():
     assert "Thread Size: 1/4-20" in case["description"]
 
 
-def test_near_ambiguity_generation_skips_cross_option_scoped_common_columns():
+def test_near_ambiguity_generation_excludes_cross_option_scoped_common_columns():
     seed = {"part_number": "A1", "category": "Heating", "seed_query": "cartridge heater"}
     rows = [
         {
@@ -821,7 +821,41 @@ def test_near_ambiguity_generation_skips_cross_option_scoped_common_columns():
         min_common_constraints=4,
     )
 
-    assert case is None
+    assert case is not None
+    assert case["expected_part_numbers"] == ["A1", "A2"]
+    assert "Selected option" in case["omitted_fields"]
+    assert "120V AC, Single Phase Current" not in case["description"]
+    assert "240V AC, Single Phase Current" not in case["description"]
+
+
+def test_near_ambiguity_constraints_exclude_price_and_other_option_fields():
+    rows = [
+        {
+            "part_number": "A1",
+            "family": "L-Keys",
+            "groups": [],
+            "selected_option": "Each",
+            "attributes": {
+                "Length Long Leg": '2 5/8 "',
+                "Package Pkg. Qty.": "10",
+                "Pair": "20.86",
+            },
+        },
+        {
+            "part_number": "A2",
+            "family": "L-Keys",
+            "groups": [],
+            "selected_option": "Package",
+            "attributes": {},
+        },
+    ]
+
+    pairs = near_benchmark.constraint_pairs(rows[0], rows)
+    labels = {pair["label"] for pair in pairs}
+
+    assert "Length Long Leg" in labels
+    assert "Package Pkg. Qty." not in labels
+    assert "Pair" not in labels
 
 
 def test_row_description_uses_target_row_and_selected_option_scope():
