@@ -11,7 +11,6 @@
 \usepackage{booktabs}
 \usepackage{tabularx}
 \usepackage{array}
-\usepackage{enumitem}
 
 \newcommand{\mcp}{MCP}
 \newcommand{\tool}[1]{\texttt{#1}}
@@ -77,18 +76,11 @@ The problem addressed in this paper is one step earlier in the sourcing workflow
 
 \section{System Design}
 
-\subsection{MCP Server Surface}
+\subsection{Part-Number Resolution Interface}
 
-The package exposes a Python MCP server over stdio. The main user-facing tool is \tool{mcmaster\_find\_exact\_part}; the remaining tools expose the browser and extraction state needed for inspection, recovery, and agent-driven navigation when a first search page is insufficient. The public tools are:
-\begin{itemize}[leftmargin=*]
-  \item \tool{mcmaster\_find\_exact\_part}: resolve a detailed text description to the matching set of catalog part numbers;
-  \item \tool{mcmaster\_extract\_schema}: open or search a page and return dynamically extracted filters, table columns, row attributes, and part-number rows;
-  \item \tool{mcmaster\_search}, \tool{mcmaster\_open}, \tool{mcmaster\_follow\_link}, \tool{mcmaster\_current\_page}, and \tool{mcmaster\_back}: provide stateful headless navigation through rendered pages;
-  \item \tool{mcmaster\_find\_parts}: broad search returning part numbers found during rendered search/category navigation; and
-  \item \tool{mcmaster\_url}: generate product or search URLs without launching a browser.
-\end{itemize}
+The package exposes a Python MCP server whose central tool, \tool{mcmaster\_find\_exact\_part}, resolves a textual mechanical component description to the set of McMaster-Carr part numbers that match it. This is the interface studied in the paper. The input is a natural-language requirement such as a detailed description of a screw, hinge, switch, bearing, filter, or other catalog component. The output is a structured match set containing the recovered part numbers and supporting evidence from the rendered catalog rows.
 
-These support tools are not separate research claims. They make the resolver usable by external agents: an agent can inspect the evidence behind a result, move through category pages, extract the current schema, and retry with better context without reimplementing browser automation. The implementation is packaged as \tool{mcmaster-navigator-mcp}, requires Python 3.11 or newer, and uses SeleniumBase UC mode with headless Chrome. Model credentials are supplied at runtime rather than embedded in the package.
+This contract is intentionally narrower than general catalog browsing. The server may use internal navigation, extraction, and retry operations to reach the result, but the research object is the description-to-part-number resolver. The implementation is packaged as \tool{mcmaster-navigator-mcp}, requires Python 3.11 or newer, and uses SeleniumBase UC mode with headless Chrome. Model credentials are supplied at runtime rather than embedded in the package.
 
 \subsection{Headless Browser and Rendered-Page Extraction}
 
