@@ -54,6 +54,7 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=float(os.getenv("MCMASTER_NAV_CASE_TIMEOUT_SECONDS", "600")),
     )
+    parser.add_argument("--case-retries", type=int, default=2)
     return parser.parse_args()
 
 
@@ -88,7 +89,7 @@ def main() -> None:
     results = list(existing_results)
     used_tokens = sum(int(record.get("llm_tokens") or 0) for record in results)
     started = time.time()
-    navigator = McMasterNavigator()
+    navigator: McMasterNavigator | None = None
     try:
         for index, case in enumerate(cases, start=1):
             if case["case_id"] in completed:
@@ -96,11 +97,8 @@ def main() -> None:
             if used_tokens >= args.llm_run_token_budget:
                 print(f"token budget reached: {used_tokens}/{args.llm_run_token_budget}")
                 break
-            if not args.reuse_browser:
-                navigator.close()
-                navigator = McMasterNavigator()
             print(f"score {index}/{len(cases)} {case['kind']} {case['source_part_number']} [{case['category']}]")
-            result = score_case(navigator, case, args)
+            result, navigator = score_case_with_recovery(navigator, case, args)
             append_jsonl(results_path, result)
             results.append(result)
             completed.add(case["case_id"])
@@ -116,7 +114,7 @@ def main() -> None:
         write_csv(csv_path, results)
         print(json.dumps(summary, indent=2))
     finally:
-        navigator.close()
+        close_navigator(navigator)
 
 
 def build_cases(source_run: Path, *, target_per_kind: int) -> list[dict[str, Any]]:
@@ -221,7 +219,105 @@ def score_case(navigator: McMasterNavigator, case: dict[str, Any], args: argpars
     }
 
 
+def score_case_with_recovery(
+    navigator: McMasterNavigator | None,
+    case: dict[str, Any],
+    args: argparse.Namespace,
+) -> tuple[dict[str, Any], McMasterNavigator | None]:
+    previous_tokens = 0
+    attempts: list[dict[str, Any]] = []
+    retries = max(int(args.case_retries), 0)
+    for attempt_index in range(retries + 1):
+        if attempt_index > 0 or not args.reuse_browser or navigator is None:
+            close_navigator(navigator)
+            navigator = None
+            try:
+                navigator = McMasterNavigator()
+            except Exception as exc:
+                result = error_case_result(case, error=f"{type(exc).__name__}: {exc}")
+            else:
+                result = score_case(navigator, case, args)
+        else:
+            result = score_case(navigator, case, args)
+
+        attempts.append(
+            {
+                "attempt": attempt_index + 1,
+                "status": result.get("status"),
+                "passed": result.get("passed"),
+                "error": result.get("error", ""),
+                "llm_tokens": int(result.get("llm_tokens") or 0),
+                "seconds": result.get("seconds"),
+            }
+        )
+        if not retryable_result(result) or attempt_index >= retries:
+            result["llm_tokens"] = int(result.get("llm_tokens") or 0) + previous_tokens
+            result["attempts"] = attempts
+            result["retry_count"] = len(attempts) - 1
+            return result, navigator
+
+        previous_tokens += int(result.get("llm_tokens") or 0)
+        print(f"  retrying after transient error: {short_error(result.get('error', ''))}")
+        close_navigator(navigator)
+        navigator = None
+        time.sleep(min(10, 2 * (attempt_index + 1)))
+
+    raise RuntimeError("unreachable retry loop state")
+
+
+def retryable_result(result: dict[str, Any]) -> bool:
+    status = clean_text(str(result.get("status") or ""))
+    if status not in {"error", "timeout"}:
+        return False
+    error = clean_text(str(result.get("error") or "")).lower()
+    retryable_fragments = [
+        "sessionnotcreatedexception",
+        "chrome not reachable",
+        "invalid session",
+        "webdriver",
+        "cannot connect to chrome",
+        "timed out",
+        "case exceeded",
+    ]
+    return not error or any(fragment in error for fragment in retryable_fragments)
+
+
+def error_case_result(case: dict[str, Any], *, error: str) -> dict[str, Any]:
+    status = "error"
+    return {
+        **case,
+        "passed": evaluate_case(case, status=status, returned_count=0, selected_part=""),
+        "false_unique": False,
+        "status": status,
+        "selected_part_number": None,
+        "returned_count": 0,
+        "returned_part_numbers": [],
+        "candidate_count": 0,
+        "llm_tokens": 0,
+        "pages_visited": [],
+        "filter_trace": [],
+        "llm_payloads": {},
+        "error": error,
+        "seconds": 0,
+    }
+
+
+def close_navigator(navigator: McMasterNavigator | None) -> None:
+    if navigator is not None:
+        try:
+            navigator.close()
+        except Exception:
+            pass
+
+
+def short_error(error: object) -> str:
+    text = clean_text(str(error))
+    return text[:180] + ("..." if len(text) > 180 else "")
+
+
 def evaluate_case(case: dict[str, Any], *, status: str, returned_count: int, selected_part: str) -> bool:
+    if status in {"error", "timeout", "budget_exceeded"}:
+        return False
     if case["kind"] == "nonexistent":
         return status != "unique" and not selected_part
     if case["kind"] == "ambiguous":

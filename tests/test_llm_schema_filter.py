@@ -13,6 +13,11 @@ SPEC = importlib.util.spec_from_file_location("mcmaster_retrieval_benchmark", BE
 assert SPEC is not None and SPEC.loader is not None
 benchmark = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(benchmark)
+NEGATIVE_BENCHMARK = ROOT / "benchmarks" / "negative_ambiguity_benchmark.py"
+NEGATIVE_SPEC = importlib.util.spec_from_file_location("negative_ambiguity_benchmark", NEGATIVE_BENCHMARK)
+assert NEGATIVE_SPEC is not None and NEGATIVE_SPEC.loader is not None
+negative_benchmark = importlib.util.module_from_spec(NEGATIVE_SPEC)
+NEGATIVE_SPEC.loader.exec_module(negative_benchmark)
 FILTER_MODULES = (benchmark, schema_resolver)
 
 
@@ -659,6 +664,25 @@ def test_score_seed_timeout_restarts_browser_and_records_structured_result(monke
     assert result["llm_tokens"] == 14
     assert [instance.closed for instance in FakeNavigator.instances] == [True, True, False]
     assert navigator is FakeNavigator.instances[-1]
+
+
+def test_negative_benchmark_errors_do_not_count_as_nonexistent_success():
+    case = {"kind": "nonexistent"}
+
+    assert negative_benchmark.evaluate_case(case, status="error", returned_count=0, selected_part="") is False
+    assert negative_benchmark.evaluate_case(case, status="timeout", returned_count=0, selected_part="") is False
+    assert negative_benchmark.evaluate_case(case, status="unresolved", returned_count=0, selected_part="") is True
+
+
+def test_negative_benchmark_retries_browser_start_errors():
+    result = {
+        "status": "error",
+        "error": "SessionNotCreatedException: cannot connect to chrome at 127.0.0.1",
+    }
+
+    assert negative_benchmark.retryable_result(result) is True
+    assert negative_benchmark.retryable_result({"status": "error", "error": "TypeError: bad code"}) is False
+    assert negative_benchmark.retryable_result({"status": "ambiguous", "error": ""}) is False
 
 
 def test_row_description_uses_target_row_and_selected_option_scope():
