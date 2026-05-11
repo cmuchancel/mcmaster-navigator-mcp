@@ -124,7 +124,7 @@ The core problem is part sourcing. Assembly workflows become possible by treatin
 
 This line-item independence allows parallel sourcing agents. Compatibility checking can be layered above the resolver, but the core tool intentionally solves the narrower and measurable problem of finding the catalog part numbers that match stated requirements.
 
-\section{Experiment Design}
+\section{Evaluation Methodology}
 
 \subsection{Exact Part Recovery}
 
@@ -202,10 +202,6 @@ Suspending & 7 & 7\\
 
 The absence of misses across these categories is evidence that runtime schema extraction can handle substantially different product families. It is not proof of complete coverage of every McMaster-Carr page or every possible human description. The strongest defensible claim is that dynamic schema extraction and deterministic filtering can recover exact part numbers across diverse catalog families when descriptions contain sufficient identifying information.
 
-\section{Conclusion}
-
-This work turns a practical part-sourcing bottleneck into a measurable tool interface. A design agent can describe a required component, but a downstream product information API needs a part number. The proposed MCP server bridges that gap by headlessly navigating McMaster-Carr, extracting live product schemas, grounding textual constraints to live fields, and filtering rows deterministically. In final benchmark runs, the system recovered 250/250 exact part numbers across 25 catalog categories, returned expected multi-part sets when requirements were under-specified, and returned no part when requirements could not be satisfied. Reliable part sourcing can let agents compose off-the-shelf components into larger designs while automatically attaching BOM entries, CAD, datasheets, prices, live links, and product data.
-
 \section{Discussion}
 
 \subsection{Why Dynamic Schemas Matter}
@@ -231,6 +227,10 @@ The system is not affiliated with McMaster-Carr and should be used in accordance
 Latency is dominated by headless browsing. The mean exact-recovery latency in the final run was 71.038 seconds per case. Parallel line-item sourcing can reduce assembly-level wall-clock time, but single-line resolution remains slow relative to a pure API call.
 
 Future work should evaluate noisier human-written requirements, demonstrate full assembly-level sourcing with compatibility checks across line items, and measure robustness over time as catalog pages change.
+
+\section{Conclusion}
+
+This work turns a practical part-sourcing bottleneck into a measurable tool interface. A design agent can describe a required component, but a downstream product information API needs a part number. The proposed MCP server bridges that gap by headlessly navigating McMaster-Carr, extracting live product schemas, grounding textual constraints to live fields, and filtering rows deterministically. In final benchmark runs, the system recovered 250/250 exact part numbers across 25 catalog categories, returned expected multi-part sets when requirements were under-specified, and returned no part when requirements could not be satisfied. Reliable part sourcing can let agents compose off-the-shelf components into larger designs while automatically attaching BOM entries, CAD, datasheets, prices, live links, and product data.
 
 \bibliographystyle{asmeconf}
 \bibliography{asme_idetc_mcmaster_navigator}
