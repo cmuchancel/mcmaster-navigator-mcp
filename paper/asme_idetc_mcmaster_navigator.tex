@@ -67,6 +67,8 @@ MCP is useful here because part sourcing is not simply text generation. It requi
 
 McMaster-Carr's Product Information API is available to approved customers and includes requests for product information, price, image retrieval, CAD retrieval, and datasheet retrieval once a subscribed part number is known~\cite{mcmasterapi}. This makes part-number discovery the critical upstream step. Our system is designed to fill that step and then hand part numbers to an approved product-data pipeline.
 
+McMaster-Carr's web search is effective for human catalog browsing: a user can enter keywords, inspect category pages, compare table rows, apply filters, and choose a part number. An autonomous engineering agent needs a different interface. Given a product description, the agent needs a structured result containing the part numbers that satisfy the stated requirements. The proposed MCP server is therefore better suited to agentic sourcing because it converts rendered search and catalog pages into a machine-readable matching set rather than leaving the selection step to a human reader.
+
 \subsection{Existing McMaster-Carr Agent Tooling}
 
 A prior public repository, \tool{mjbraun/mcmaster-agent}, is a useful MCP wrapper around McMaster-Carr search and product lookup~\cite{mcmasteragent}. If the user already has a part number, its product tool returns the product name, URL, and specification fields. If the user has a keyword query, its search tool returns candidate product hits with part numbers, names, and URLs. It also includes a URL tool for constructing product or search links. In other words, it helps an agent look up a known identifier or browse search results.
