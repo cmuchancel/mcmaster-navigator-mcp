@@ -238,7 +238,7 @@ def resolve_exact_part_dynamic(
         if ambiguity_trace:
             filter_trace.append(ambiguity_trace)
         forced_unresolved = False
-        if len(returned_parts) > 1 and mapped.get("unmapped_constraints"):
+        if len(returned_parts) > 1 and has_unmapped_or_ungrounded_constraints(mapped):
             unmapped_judgement = llm_judge_unmapped_constraints(
                 client,
                 description=description,
@@ -250,8 +250,8 @@ def resolve_exact_part_dynamic(
             if unmapped_judgement_forces_unresolved(unmapped_judgement):
                 filter_trace.append(
                     {
-                        "constraint": "unmapped required constraints",
-                        "field": "metadata.unmapped_constraints",
+                        "constraint": "unmapped or ungrounded required constraints",
+                        "field": "metadata.constraint_grounding",
                         "value": clean_text(str(unmapped_judgement.get("reason") or "")),
                         "comparator": "llm_required_constraint_grounding_check",
                         "accepted_values": [],
@@ -997,6 +997,20 @@ def broad_request_should_remain_ambiguous(description: str, mapped: dict[str, An
     return True
 
 
+def has_unmapped_or_ungrounded_constraints(mapped: dict[str, Any]) -> bool:
+    if mapped.get("unmapped_constraints"):
+        return True
+    for matcher in mapped.get("matchers", []):
+        if not isinstance(matcher, dict):
+            continue
+        if "accepted_values" not in matcher:
+            continue
+        accepted_values = [clean_text(str(value)) for value in matcher.get("accepted_values", []) if clean_text(str(value))]
+        if not accepted_values:
+            return True
+    return False
+
+
 def row_result(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "part_number": row.get("part_number"),
@@ -1269,16 +1283,25 @@ def llm_judge_unmapped_constraints(
 ) -> dict[str, Any]:
     system = (
         "You are a strict catalog matching judge. A resolver found multiple live catalog candidates, "
-        "but some requested constraints were not mapped to live schema fields. Decide whether those unmapped "
-        "constraints are mandatory requirements that make every candidate unresolved. Return only JSON."
+        "but some requested constraints were not mapped to live schema fields or had no grounded live values. "
+        "Decide whether those ungrounded constraints are mandatory requirements that make every candidate unresolved. "
+        "Return only JSON."
     )
+    ungrounded_matchers = [
+        matcher
+        for matcher in mapped.get("matchers", [])
+        if isinstance(matcher, dict)
+        and "accepted_values" in matcher
+        and not [clean_text(str(value)) for value in matcher.get("accepted_values", []) if clean_text(str(value))]
+    ]
     user = json.dumps(
         {
-            "task": "Decide whether unmapped constraints should force status=unresolved instead of ambiguous.",
+            "task": "Decide whether unmapped or ungrounded constraints should force status=unresolved instead of ambiguous.",
             "description": description,
             "normalized_constraints": normalized.get("constraints", []),
             "mapped_matchers": mapped.get("matchers", []),
             "unmapped_constraints": mapped.get("unmapped_constraints", []),
+            "ungrounded_matchers": ungrounded_matchers,
             "sample_candidate_rows": [row_result(row) for row in sample_rows],
             "output_schema": {
                 "unresolved": True,
@@ -1286,8 +1309,9 @@ def llm_judge_unmapped_constraints(
                 "reason": "short explanation",
             },
             "rules": [
-                "Return unresolved=true only when an unmapped constraint is a mandatory user requirement and no supplied row shows that requirement.",
-                "Return unresolved=false when the unmapped item is merely a duplicate family/group label, optional context, a value already represented by mapped_matchers, or a harmless unavailable column such as a blank spec.",
+                "Return unresolved=true only when an unmapped or ungrounded constraint is a mandatory user requirement and no supplied row shows that requirement.",
+                "An ungrounded matcher with empty accepted_values is evidence that the requested value was absent from live field values.",
+                "Return unresolved=false when the unmapped or ungrounded item is merely a duplicate family/group label, optional context, a value already represented by other mapped_matchers, or a harmless unavailable column such as a blank spec.",
                 "If the user explicitly says only to return a part when every exact requirement is present, missing required constraints are fatal.",
                 "Do not reject because the query is broad; broad underspecified queries should remain ambiguous.",
             ],

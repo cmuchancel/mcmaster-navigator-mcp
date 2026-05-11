@@ -758,6 +758,16 @@ def test_unmapped_judgement_requires_unresolved_and_fatal_constraints():
     ) is False
 
 
+def test_empty_accepted_values_count_as_ungrounded_constraints():
+    assert schema_resolver.has_unmapped_or_ungrounded_constraints({"unmapped_constraints": ["material"]}) is True
+    assert schema_resolver.has_unmapped_or_ungrounded_constraints(
+        {"matchers": [{"field": "row_text", "value": "unobtainium", "accepted_values": []}]}
+    ) is True
+    assert schema_resolver.has_unmapped_or_ungrounded_constraints(
+        {"matchers": [{"field": "groups", "value": "Spring Steel", "accepted_values": ["Spring Steel"]}]}
+    ) is False
+
+
 def test_broad_family_only_request_stays_ambiguous_after_accidental_unique_filter():
     rows = [
         {"part_number": "2498N11", "family": "Welding Clamps", "groups": ["Fixed Jaw"], "attributes": {}},
