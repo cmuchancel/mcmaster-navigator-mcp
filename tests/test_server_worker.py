@@ -64,3 +64,47 @@ def test_call_worker_timeout_replaces_executor_and_closes_browser(monkeypatch):
     assert server._executor is not old_executor
 
     server._executor.shutdown(wait=False, cancel_futures=True)
+
+
+def test_configure_openai_api_key_from_file(tmp_path, monkeypatch):
+    key_file = tmp_path / "openai_key.txt"
+    key_file.write_text("test-key\n", encoding="utf-8")
+    monkeypatch.setattr(server, "_openai_api_key", None)
+
+    args = server.parse_args(["--openai-api-key-file", str(key_file)])
+    server.configure_from_args(args)
+
+    assert server._openai_api_key == "test-key"
+
+
+def test_configure_rejects_two_openai_key_sources():
+    args = server.parse_args(["--openai-api-key", "inline", "--openai-api-key-file", "key.txt"])
+
+    with pytest.raises(SystemExit, match="Use only one"):
+        server.configure_from_args(args)
+
+
+def test_find_exact_part_passes_configured_api_key(monkeypatch):
+    from mcmaster_navigator_mcp import schema_resolver
+
+    def fake_resolve(navigator, description, **kwargs):
+        return {
+            "description": description,
+            "api_key": kwargs.get("api_key"),
+            "search_query": kwargs.get("search_query"),
+        }
+
+    monkeypatch.setattr(server, "_openai_api_key", "configured-key")
+    monkeypatch.setattr(schema_resolver, "resolve_exact_part_dynamic", fake_resolve)
+
+    result = server._dispatch_once(
+        "find_exact_part",
+        {"description": "demo part", "search_query": "demo"},
+        object(),
+    )
+
+    assert result == {
+        "description": "demo part",
+        "api_key": "configured-key",
+        "search_query": "demo",
+    }

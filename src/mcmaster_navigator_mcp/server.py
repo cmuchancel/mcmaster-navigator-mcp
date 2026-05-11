@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import argparse
 import atexit
 import os
 import json
@@ -21,6 +22,7 @@ from .navigator import McMasterNavigator
 server = Server("mcmaster-navigator")
 _executor = ThreadPoolExecutor(max_workers=1)
 _navigator: McMasterNavigator | None = None
+_openai_api_key: str | None = None
 
 
 def _shutdown() -> None:
@@ -252,6 +254,7 @@ def _dispatch_once(action: str, payload: dict[str, Any], navigator: McMasterNavi
         return resolve_exact_part_dynamic(
             navigator,
             payload["description"],
+            api_key=_openai_api_key,
             search_query=payload.get("search_query"),
             max_candidates=int(payload.get("max_candidates", 10)),
             max_pages=int(payload.get("max_pages", 20)),
@@ -345,6 +348,37 @@ def _text(value: dict[str, Any]) -> TextContent:
     return TextContent(type="text", text=json.dumps(value, indent=2))
 
 
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="mcmaster-navigator-mcp",
+        description="Unofficial headless MCP server for navigating McMaster-Carr.",
+    )
+    parser.add_argument(
+        "--openai-api-key",
+        default="",
+        help="OpenAI API key for exact-part resolution. Prefer OPENAI_API_KEY or --openai-api-key-file for shared machines.",
+    )
+    parser.add_argument(
+        "--openai-api-key-file",
+        default="",
+        help="Path to a file containing the OpenAI API key.",
+    )
+    return parser.parse_args(argv)
+
+
+def configure_from_args(args: argparse.Namespace) -> None:
+    global _openai_api_key
+    inline_key = (args.openai_api_key or "").strip()
+    key_file = (args.openai_api_key_file or "").strip()
+    if inline_key and key_file:
+        raise SystemExit("Use only one of --openai-api-key or --openai-api-key-file")
+    if key_file:
+        from pathlib import Path
+
+        inline_key = Path(key_file).expanduser().read_text(encoding="utf-8").strip()
+    _openai_api_key = inline_key or None
+
+
 async def main_async() -> None:
     protocol_stdout = anyio.wrap_file(TextIOWrapper(sys.stdout.buffer, encoding="utf-8"))
     sys.stdout = sys.stderr
@@ -352,7 +386,8 @@ async def main_async() -> None:
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    configure_from_args(parse_args(argv))
     asyncio.run(main_async())
 
 

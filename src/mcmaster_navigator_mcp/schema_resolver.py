@@ -14,7 +14,8 @@ from .models import PageSnapshot
 from .navigator import McMasterNavigator, _order_links_for_query
 from .catalog_text import CATALOG_SEMANTIC_STOPWORDS, derive_search_queries, normalize, term_matches
 
-# Keep public MCP setup simple: normal users only set OPENAI_API_KEY.
+# Keep public MCP setup simple: users can set OPENAI_API_KEY, while the server
+# can pass an explicit key from CLI/runtime configuration.
 DEFAULT_OPENAI_MODEL = "gpt-5.4-mini"
 DEFAULT_MAX_SEARCHES = 2
 DEFAULT_MAX_ROWS = 700
@@ -132,6 +133,7 @@ def resolve_exact_part_dynamic(
     navigator: McMasterNavigator,
     description: str,
     *,
+    api_key: str | None = None,
     search_query: str | None = None,
     max_candidates: int = 10,
     max_pages: int = 8,
@@ -142,9 +144,9 @@ def resolve_exact_part_dynamic(
     max_field_values: int = DEFAULT_MAX_FIELD_VALUES,
 ) -> dict[str, Any]:
     """Resolve a text description by filtering live McMaster rows, not ranking products."""
-    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    api_key = (api_key or os.environ.get("OPENAI_API_KEY", "")).strip()
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is required for dynamic schema resolution")
+        raise RuntimeError("An OpenAI API key is required for dynamic schema resolution")
     model = (model or DEFAULT_OPENAI_MODEL).strip()
     token_usage = TokenUsage()
     client = OpenAIJsonClient(api_key=api_key, model=model, usage=token_usage)
