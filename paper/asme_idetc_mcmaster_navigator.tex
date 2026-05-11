@@ -49,7 +49,7 @@ The status quo separates broad catalog search from product-data retrieval. McMas
 
 The gap is challenging because industrial catalogs are not organized around a single fixed schema. A screw might be filtered by material, thread size, length, drive style, package quantity, and finish. A switch might be filtered by circuit, terminal count, maintained or momentary action, panel thickness, voltage, and terminal style. A conveyor roller, spring, hinge, tape, bearing, or filter has a different set of discriminating fields. A general system cannot be built by hard-coding every possible catalog attribute, and a ranked answer is not sufficient for exact procurement. The correct output is the complete set of catalog rows that satisfy the description.
 
-In this work, we present a dynamic catalog-grounding method exposed through a Model Context Protocol (\mcp{}) server. The input is a textual mechanical component description, optionally with a broad search hint, and the output is the set of part numbers whose live catalog rows satisfy the grounded constraints. The system renders the current catalog page, extracts product rows and visible column names, summarizes the live schema, uses a language model only to align requested constraints with those live fields and values, and then filters rows programmatically. The language model is not asked to hallucinate or rank part numbers; it is asked to produce grounded matchers against fields actually present on the page. Once part numbers are recovered, existing product-data APIs can automatically attach live links, price information, datasheets, and CAD files to generated component or assembly descriptions.
+In this work, we present a dynamic catalog-grounding method exposed through a Model Context Protocol (\mcp{}) server. The input is a textual mechanical component description, and the output is the set of part numbers whose live catalog rows satisfy the grounded constraints. The system derives catalog search queries internally, renders live catalog pages, extracts product rows and visible column names, summarizes the live schema, uses a language model only to align requested constraints with those live fields and values, and then filters rows programmatically. The language model is not asked to hallucinate or rank part numbers; it is asked to produce grounded matchers against fields actually present on the page. Once part numbers are recovered, existing product-data APIs can automatically attach live links, price information, datasheets, and CAD files to generated component or assembly descriptions.
 
 Our main contributions are:
 \begin{enumerate}[leftmargin=*]
@@ -93,20 +93,20 @@ These support tools are not separate research claims. They make the resolver usa
 
 \subsection{Headless Browser and Rendered-Page Extraction}
 
-McMaster-Carr pages are rendered web pages with product tables, category links, filters, and product detail pages. The navigator opens search URLs, optionally auto-drills through category links, and snapshots the rendered HTML. The extractor returns part numbers, product rows, row attributes, evidence text, navigable links, and schema objects containing filters, table columns, and part-number rows.
+McMaster-Carr pages are rendered web pages with product tables, category links, filters, and product detail pages. The navigator opens search URLs, auto-drills through category links when needed, and snapshots the rendered HTML. The extractor returns part numbers, product rows, row attributes, evidence text, navigable links, and schema objects containing filters, table columns, and part-number rows.
 
 The browser is isolated by default with a temporary Chrome profile. The server serializes browser work through a single worker so browser state remains coherent across navigation calls. Browser logs are kept off MCP protocol stdout.
 
 \subsection{Dynamic Exact-Part Resolution}
 
-Figure~\ref{fig:pipeline} summarizes the exact-part resolver. The resolver normalizes the description into broad search roots and literal constraints, searches the generated roots headlessly, extracts rows from product hits and schema tables, summarizes the live schema, asks the language model to map requested constraints to live fields and accepted values, and applies the resulting matchers with Python row filtering. If filtering conflicts with the live schema, the language model repairs the mapping from the extracted field/value summary. If one row remains, the resolver runs a final strict verification check against that row. If required constraints are missing or contradicted, the row is removed from the result set.
+Figure~\ref{fig:pipeline} summarizes the exact-part resolver. The resolver derives catalog search roots and literal constraints from the description, searches the generated roots headlessly, extracts rows from product hits and schema tables, summarizes the live schema, asks the language model to map requested constraints to live fields and accepted values, and applies the resulting matchers with Python row filtering. If filtering conflicts with the live schema, the language model repairs the mapping from the extracted field/value summary. If one row remains, the resolver runs a final strict verification check against that row. If required constraints are missing or contradicted, the row is removed from the result set.
 
 \begin{figure}[t]
 \centering
 \fbox{\begin{minipage}{0.94\columnwidth}
 \small
 \textbf{Text requirement}
-$\rightarrow$ search roots and constraints
+$\rightarrow$ derived search roots and constraints
 $\rightarrow$ headless rendered pages
 $\rightarrow$ live rows and schema fields
 $\rightarrow$ LLM field/value matchers
@@ -131,7 +131,7 @@ This line-item independence allows parallel sourcing agents. Compatibility check
 
 The exact recovery benchmark begins with known part numbers sampled from rendered McMaster-Carr search/category pages. Seed queries cover broad catalog areas including door hinges, toggle switches, welding clamps, socket head cap screws, air filter cartridges, drawer slides, compression springs, cartridge heaters, grease fittings, digital calipers, PVC tubing, timing belt pulleys, eye bolts, aluminum bar, wire rope clips, bearings, guide rails, pneumatic cylinders, double-sided tape, beakers, motors, and conveyor rollers.
 
-For each sampled part number, the benchmark builds a textual description from the rendered product page or product-table row. The part number is withheld from the resolver. A case is counted correct if the returned set contains exactly one part number and that part number is the target. The final exact-recovery run used 250 cases, 25 catalog categories, \tool{gpt-5.4-mini}, page budget 8, auto-drill depth 2, maximum schema rows 700, and two LLM search roots.
+For each sampled part number, the benchmark builds a textual description from the rendered product page or product-table row. The part number is withheld from the resolver. A case is counted correct if the returned set contains exactly one part number and that part number is the target. The final exact-recovery run used 250 cases, 25 catalog categories, \tool{gpt-5.4-mini}, page budget 8, auto-drill depth 2, maximum schema rows 700, and two internally generated search roots.
 
 \subsection{Match-Set Size Checks}
 
