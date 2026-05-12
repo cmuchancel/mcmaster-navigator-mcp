@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import ssl
 import time
 import urllib.error
 import urllib.request
 from urllib.parse import unquote, urlparse
 from typing import Any
+
+import certifi
 
 from .extract import PART_RE, clean_text
 from .models import PageSnapshot
@@ -125,7 +128,8 @@ class OpenAIJsonClient:
             },
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=90) as response:
+        context = ssl.create_default_context(cafile=certifi.where())
+        with urllib.request.urlopen(request, timeout=90, context=context) as response:
             return json.loads(response.read().decode("utf-8"))
 
 

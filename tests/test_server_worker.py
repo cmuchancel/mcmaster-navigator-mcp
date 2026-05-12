@@ -37,6 +37,44 @@ def test_dispatch_retries_recoverable_browser_error_without_closing_new_session(
     server._reset_navigator()
 
 
+def test_dispatch_retries_recoverable_structured_error(monkeypatch):
+    class FakeNavigator:
+        instances = []
+
+        def __init__(self):
+            self.closed = False
+            self.index = len(self.instances)
+            self.instances.append(self)
+
+        def close(self):
+            self.closed = True
+
+    calls = []
+
+    def fake_dispatch_once(action, payload, navigator):
+        calls.append(navigator.index)
+        if len(calls) == 1:
+            return {
+                "status": "error",
+                "diagnostics": {
+                    "error": "NoSuchWindowException: target window already closed",
+                },
+            }
+        return {"status": "unique", "part_number": "90696A101"}
+
+    monkeypatch.setattr(server, "McMasterNavigator", FakeNavigator)
+    monkeypatch.setattr(server, "_navigator", None)
+    monkeypatch.setattr(server, "_dispatch_once", fake_dispatch_once)
+
+    result = server._dispatch("find_exact_part", {"description": "demo"})
+
+    assert result == {"status": "unique", "part_number": "90696A101"}
+    assert calls == [0, 1]
+    assert [navigator.closed for navigator in FakeNavigator.instances] == [True, False]
+
+    server._reset_navigator()
+
+
 def test_call_worker_timeout_replaces_executor_and_closes_browser(monkeypatch):
     class FakeNavigator:
         def __init__(self):

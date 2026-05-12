@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcmaster-navigator-mcp"
-version = "0.5.0"
+version = "0.5.4"
 description = "Unofficial headless MCP server for navigating McMaster-Carr and resolving exact part numbers"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,6 +26,7 @@ classifiers = [
 ]
 dependencies = [
   "beautifulsoup4>=4.12",
+  "certifi>=2024.2",
   "mcp>=1.0",
   "seleniumbase>=4.25",
 ]

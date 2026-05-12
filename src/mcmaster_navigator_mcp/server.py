@@ -222,7 +222,11 @@ def _dispatch(action: str, payload: dict[str, Any]) -> dict[str, Any]:
     for attempt in range(2):
         navigator = _get_navigator()
         try:
-            return _dispatch_once(action, payload, navigator)
+            result = _dispatch_once(action, payload, navigator)
+            if attempt == 0 and _is_recoverable_browser_result(result):
+                _reset_navigator(navigator)
+                continue
+            return result
         except Exception as exc:
             last_error = exc
             if attempt == 0 and _is_recoverable_browser_error(exc):
@@ -318,7 +322,21 @@ def _replace_worker_after_timeout(executor: ThreadPoolExecutor) -> None:
 
 
 def _is_recoverable_browser_error(exc: Exception) -> bool:
-    text = f"{type(exc).__name__}: {exc}".lower()
+    return _is_recoverable_browser_error_text(f"{type(exc).__name__}: {exc}")
+
+
+def _is_recoverable_browser_result(result: dict[str, Any]) -> bool:
+    if result.get("status") != "error":
+        return False
+    diagnostics = result.get("diagnostics")
+    if not isinstance(diagnostics, dict):
+        return False
+    error = diagnostics.get("error")
+    return isinstance(error, str) and _is_recoverable_browser_error_text(error)
+
+
+def _is_recoverable_browser_error_text(text: str) -> bool:
+    text = text.lower()
     return any(
         marker in text
         for marker in (

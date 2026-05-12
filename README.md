@@ -40,7 +40,7 @@ pip install mcmaster-navigator-mcp
 You can also send someone a built wheel:
 
 ```bash
-pip install /path/to/mcmaster_navigator_mcp-0.5.0-py3-none-any.whl
+pip install /path/to/mcmaster_navigator_mcp-0.5.4-py3-none-any.whl
 ```
 
 For local development:
@@ -53,7 +53,7 @@ pip install -e ".[dev]"
 
 ## MCP Config
 
-After PyPI publish, the lowest-friction config is:
+For MCP clients, the lowest-friction config is:
 
 ```json
 {

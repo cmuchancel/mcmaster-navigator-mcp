@@ -95,6 +95,8 @@ def extract_part_numbers(text: str) -> list[str]:
 
 
 def detect_page_type(url: str, title: str, soup: BeautifulSoup) -> str:
+    if is_site_unavailable(soup) or is_not_found_page(title, soup):
+        return "unavailable"
     path = urlparse(url).path.lower()
     title_lower = title.lower()
     if path in {"", "/"} and title_lower in {"mcmaster-carr", ""}:
@@ -126,6 +128,8 @@ def snapshot_from_html(
     schemas = extract_page_schema(soup, url, links=links)
     text_preview = clean_text(soup.get_text(" ", strip=True))[:1200]
     part_numbers = sorted({product.part_number for product in products} | set(extract_part_numbers(html)))
+    unavailable = is_site_unavailable(soup)
+    not_found = is_not_found_page(page_title, soup)
     return PageSnapshot(
         url=url,
         title=page_title,
@@ -139,7 +143,26 @@ def snapshot_from_html(
         diagnostics={
             "html_length": len(html or ""),
             "raw_part_number_count": len(extract_part_numbers(html)),
+            "site_unavailable": unavailable,
+            "not_found": not_found,
         },
+    )
+
+
+def is_site_unavailable(soup: BeautifulSoup) -> bool:
+    text = clean_text(soup.get_text(" ", strip=True)).lower()
+    return (
+        "our web site is temporarily unavailable" in text
+        or "our website is temporarily unavailable" in text
+    )
+
+
+def is_not_found_page(title: str, soup: BeautifulSoup) -> bool:
+    title_lower = clean_text(title).lower()
+    text = clean_text(soup.get_text(" ", strip=True)).lower()
+    return (
+        "404 - file or directory not found" in title_lower
+        or "server error 404 - file or directory not found" in text
     )
 
 
