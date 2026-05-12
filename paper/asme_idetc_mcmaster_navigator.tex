@@ -185,7 +185,7 @@ The final exact-recovery run used 250 cases sampled across 25 catalog categories
 
 \subsection{Multi-Match Part Recovery}
 
-The multi-match benchmark evaluates whether the resolver preserves alternatives for under-specified descriptions rather than forcing a single choice. The 50 cases cover two common forms of ambiguity. In 25 controlled cases, we start from successful exact cases, collect the live schema rows around the target, and remove one discriminator from the description. This creates a new description with a known matching set, usually two to four parts, computed from the same rendered catalog rows. The other 25 cases use broader descriptions such as ``double sided tape,'' ``ball bearing,'' ``door hinges,'' and ``toggle switch.'' These test the same behavior at larger cardinalities. A multi-match case passes when the resolver returns the matching set for controlled cases, or returns multiple matching part numbers for broad cases, without inventing a single best answer.
+The multi-match benchmark evaluates whether the resolver preserves alternatives for under-specified descriptions rather than forcing a single choice. The 50 cases cover two common forms of ambiguity. In 25 controlled cases, we start from successful exact cases, collect the live schema rows around the target, and remove one discriminator from the description. This creates a new description with a known matching set, usually two to four parts, computed from the same rendered catalog rows. The other 25 cases use broader descriptions such as ``double sided tape,'' ``ball bearing,'' ``door hinges,'' and ``toggle switch,'' paired with predefined expected match sets from the rendered catalog rows. These test the same behavior at larger cardinalities. A multi-match case passes only when the resolver returns the expected matching set for that case, whether the ambiguity is controlled or broad.
 
 \subsection{No-Match Part Descriptions}
 
@@ -204,7 +204,7 @@ The absence of misses across these categories is evidence that runtime schema ex
 
 \subsection{Multi-Match Part Recovery Results}
 
-The multi-match benchmark passed all 50 under-specified cases, for a 100\% multi-match pass rate. For controlled cases, the resolver returned the expected matching set. For broad category-level descriptions, it returned multiple part numbers rather than collapsing the request to a single guess. These results are reported together because they test the same contract: when a description admits more than one catalog row, the returned object should preserve the expected matching set. Across the combined multi-match set, the resolver used an average of 5,573.02 recorded LLM tokens per case and an average wall-clock time of 57.657~s per case.
+The multi-match benchmark passed all 50 under-specified cases, for a 100\% multi-match pass rate. For both controlled and broad category-level descriptions, the resolver returned the expected matching set rather than collapsing the request to a single guess or returning an incomplete alternative set. These results are reported together because they test the same contract: when a description admits more than one catalog row, the returned object should preserve the expected matching set. Across the combined multi-match set, the resolver used an average of 5,573.02 recorded LLM tokens per case and an average wall-clock time of 57.657~s per case.
 
 \subsection{No-Match Part Description Results}
 
