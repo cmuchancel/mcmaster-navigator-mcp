@@ -10,7 +10,8 @@
 
 \usepackage{tikz}
 \usepackage{pgfplots}
-\usepackage{float}
+\usepackage{cuted}
+\usepackage{capt-of}
 \usetikzlibrary{arrows.meta,positioning}
 \pgfplotsset{compat=1.18}
 
@@ -143,7 +144,7 @@ The exact recovery benchmark evaluates precision when the description is suffici
 
 The final exact-recovery run used 250 cases sampled across 25 catalog categories, summarized in Fig.~\ref{fig:category-coverage}.
 
-\begin{figure}[H]
+\begin{figure}[!b]
 \centering
 \resizebox{\columnwidth}{!}{%
 \begin{tikzpicture}[
@@ -211,12 +212,14 @@ The no-match benchmark returned empty part-number sets for all 25 cases, for a 1
 
 \subsection{Summary of Experimental Results}
 
-Figure~\ref{fig:benchmark-outcomes} summarizes the completed benchmark runs. The overall reported benchmark set contains 325 cases: 250 exact-recovery cases, 50 multi-match cases, and 25 no-match cases. All 325 returned the expected match-set behavior. Figure~\ref{fig:benchmark-costs} compares the recorded token and time costs across benchmark categories; the average bar is the unweighted mean across exact, multi-match, and no-match categories.
+Figure~\ref{fig:benchmark-summary} summarizes the completed benchmark runs. The overall reported benchmark set contains 325 cases: 250 exact-recovery cases, 50 multi-match cases, and 25 no-match cases. All 325 returned the expected match-set behavior. The cost plots compare recorded tokens and wall-clock time across benchmark categories; the average bars are unweighted means across exact, multi-match, and no-match categories.
 
-\begin{figure}[H]
+\begin{strip}
+\centering
+\begin{minipage}[t]{0.30\textwidth}
 \centering
 \begin{tikzpicture}[
-  outcome/.style={draw, rounded corners=2pt, fill=black!3, minimum width=0.94\columnwidth, minimum height=0.78cm, align=center, inner sep=3pt}
+  outcome/.style={draw, rounded corners=2pt, fill=black!3, minimum width=4.85cm, minimum height=0.74cm, align=center, inner sep=3pt}
 ]
 \node[outcome] (exact) at (0,0) {
   {\bfseries\small Exact: 250/250}\\[-1pt]
@@ -230,68 +233,69 @@ Figure~\ref{fig:benchmark-outcomes} summarizes the completed benchmark runs. The
   {\bfseries\small No match: 25/25}\\[-1pt]
   {\scriptsize empty set returned}
 };
-\node[font=\scriptsize, align=center, text width=0.94\columnwidth] at (0,-2.72) {All completed benchmark regimes returned the expected match-set behavior.};
+\node[font=\scriptsize, align=center, text width=4.85cm] at (0,-2.72) {All completed benchmark regimes returned the expected match-set behavior.};
 \end{tikzpicture}
-\caption{Benchmark outcome summary. The resolver returns one part for sufficiently specific descriptions, preserves the expected matching set for under-specified descriptions, and returns no parts for impossible descriptions.}
-\label{fig:benchmark-outcomes}
-\end{figure}
-
-\begin{figure}[H]
-\centering
-\begin{minipage}{0.98\columnwidth}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.32\textwidth}
 \centering
 \begin{tikzpicture}
 \begin{axis}[
   ybar,
-  width=0.92\columnwidth,
-  height=3.10cm,
+  width=\linewidth,
+  height=3.45cm,
   ymin=0,
   ymax=13500,
-  ylabel={Mean recorded LLM tokens per case},
-  symbolic x coords={Exact,Multi-match,No match,Average},
+  ylabel={Tokens/case},
+  symbolic x coords={Exact,Multi,No match,Avg.},
   xtick=data,
   ytick={0,4000,8000,12000},
+  yticklabels={0,4k,8k,12k},
   nodes near coords,
   every node near coord/.append style={font=\tiny, anchor=south, yshift=1pt},
   tick label style={font=\scriptsize},
   label style={font=\scriptsize},
   bar width=10pt,
+  axis lines=left,
+  enlarge x limits=0.18,
   clip=true
 ]
 \addplot[fill=black!20, draw=black] coordinates {
-  (Exact,7450) (Multi-match,5573) (No match,10732) (Average,7918)
+  (Exact,7450) (Multi,5573) (No match,10732) (Avg.,7918)
 };
 \end{axis}
 \end{tikzpicture}
-\vspace{0.15cm}
-
+\end{minipage}\hfill
+\begin{minipage}[t]{0.32\textwidth}
+\centering
 \begin{tikzpicture}
 \begin{axis}[
   ybar,
-  width=0.92\columnwidth,
-  height=3.10cm,
+  width=\linewidth,
+  height=3.45cm,
   ymin=0,
   ymax=95,
-  ylabel={Mean wall-clock seconds per case},
-  symbolic x coords={Exact,Multi-match,No match,Average},
+  ylabel={Seconds/case},
+  symbolic x coords={Exact,Multi,No match,Avg.},
   xtick=data,
-  ytick={0,20,40,60,80},
+  ytick={0,30,60,90},
   nodes near coords,
   every node near coord/.append style={font=\tiny, anchor=south, yshift=1pt},
   tick label style={font=\scriptsize},
   label style={font=\scriptsize},
   bar width=10pt,
+  axis lines=left,
+  enlarge x limits=0.18,
   clip=true
 ]
 \addplot[fill=black!20, draw=black] coordinates {
-  (Exact,71.0) (Multi-match,57.7) (No match,75.3) (Average,68.0)
+  (Exact,71.0) (Multi,57.7) (No match,75.3) (Avg.,68.0)
 };
 \end{axis}
 \end{tikzpicture}
 \end{minipage}
-\caption{Recorded LLM tokens and wall-clock time by benchmark category. The average bars are unweighted means of the exact, multi-match, and no-match category means.}
-\label{fig:benchmark-costs}
-\end{figure}
+\captionof{figure}{Benchmark outcome and cost summary. The resolver returns one part for sufficiently specific descriptions, preserves the expected matching set for under-specified descriptions, and returns no parts for impossible descriptions. Cost bars report mean recorded LLM tokens and mean wall-clock seconds per case.}
+\label{fig:benchmark-summary}
+\end{strip}
 
 \section{Conclusion}
 
